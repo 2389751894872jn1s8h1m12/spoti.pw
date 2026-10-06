@@ -39,9 +39,15 @@
         [_textView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [_textView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
+    self.navigationItem.leftBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"Copy" style:UIBarButtonItemStylePlain
+                                       target:self action:@selector(copyAll)];
     self.navigationItem.rightBarButtonItem =
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                      target:self action:@selector(close)];
+}
+- (void)copyAll {
+    UIPasteboard.generalPasteboard.string = _body ?: @"";
 }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)setPanelBody:(NSString *)body {
