@@ -17,7 +17,7 @@ static NSString *df_filter = @"";
 static char kDFTrackKey, kDFBadgeKey;
 
 static NSString *DFTrackIDFromURI(id uri) {
-    NSString *text = SGURIString(uri);
+    NSString *text = DFURIString(uri);
     NSString *prefix = @"spotify:track:";
     if (![text hasPrefix:prefix]) return nil;
     NSString *track = [text substringFromIndex:prefix.length];
@@ -123,13 +123,13 @@ static NSString *DFPageArtistID(void) {
         SEL sel = NSSelectorFromString(@"spt_pageURI");
         if ([vc respondsToSelector:sel]) {
             id uri = ((id (*)(id, SEL))objc_msgSend)(vc, sel);
-            NSString *text = SGURIString(uri);
+            NSString *text = DFURIString(uri);
             if ([text hasPrefix:@"spotify:artist:"] && text.length >= 37) return [text substringFromIndex:15];
         }
         if ([vc isKindOfClass:UINavigationController.class]) [queue addObjectsFromArray:((UINavigationController *)vc).viewControllers];
         [queue addObjectsFromArray:vc.childViewControllers];
     }
-    NSString *text = SGURIString(df_currentTrack.artistURI);
+    NSString *text = DFURIString(df_currentTrack.artistURI);
     return [text hasPrefix:@"spotify:artist:"] ? [text substringFromIndex:15] : nil;
 }
 
