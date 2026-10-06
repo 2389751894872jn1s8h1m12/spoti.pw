@@ -1,0 +1,7 @@
+Package: com.spotipw.distrofind
+Name: DistroFind
+Architecture: iphoneos-arm
+Description: DistroFind module
+Maintainer: DistroFind
+Author: DistroFind
+Section: Development
