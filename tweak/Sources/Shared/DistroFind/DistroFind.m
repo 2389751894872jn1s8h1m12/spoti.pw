@@ -2,6 +2,7 @@
 #import "DistroFind.h"
 #import "DistroFindData.h"
 #import "Shared/Spotify/Spclient.h"
+#include <string.h>
 
 @implementation SGDistroMetadata
 @end
