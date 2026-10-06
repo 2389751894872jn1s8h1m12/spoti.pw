@@ -231,12 +231,29 @@ static void DFTrackInfo(NSString *trackID, NSString *fallbackName, UIViewControl
         DFAppend(out, @"Artist(s)", artists);
         DFAppend(out, @"Album", DFStr(albumJSON[@"name"]) ?: DFStr(DFDic(track[@"album"])[@"name"]));
         DFAppend(out, @"Type", [DFStr(albumJSON[@"type"]) lowercaseString]);
-        DFAppend(out, @"Track no.", track[@"number"]);
+
+        NSUInteger totalTracks = 0;
+        for (NSDictionary *disc in DFArr(albumJSON[@"disc"])) totalTracks += DFArr(disc[@"track"]).count;
+        NSInteger number = [track[@"number"] respondsToSelector:@selector(integerValue)] ? [track[@"number"] integerValue] : 0;
+        NSInteger discNumber = [track[@"disc_number"] respondsToSelector:@selector(integerValue)] ? [track[@"disc_number"] integerValue] : 0;
+        if (number) {
+            NSString *numberText = totalTracks
+                ? [NSString stringWithFormat:@"%ld of %lu", (long)number, (unsigned long)totalTracks]
+                : [NSString stringWithFormat:@"%ld", (long)number];
+            if (discNumber > 1) numberText = [numberText stringByAppendingFormat:@" (disc %ld)", (long)discNumber];
+            DFAppend(out, @"Track", numberText);
+        }
+
         DFAppend(out, @"Duration", DFDuration(track[@"duration"]));
         DFAppend(out, @"Release", DFDate(albumJSON));
         DFAppend(out, @"ISRC", DFExternalID(track, @"isrc") ?: meta.isrc);
         DFAppend(out, @"UPC", DFExternalID(albumJSON, @"upc"));
         DFAppend(out, @"Label", DFStr(albumJSON[@"label"]) ?: meta.label);
+        if ([track[@"explicit"] boolValue]) DFAppend(out, @"Explicit", @"yes");
+        if ([track[@"popularity"] respondsToSelector:@selector(integerValue)])
+            DFAppend(out, @"Popularity", [NSString stringWithFormat:@"%ld/100", (long)[track[@"popularity"] integerValue]]);
+        if ([track[@"playcount"] respondsToSelector:@selector(stringValue)])
+            DFAppend(out, @"Streams", [track[@"playcount"] stringValue]);
 
         NSString *parent = meta.distributor;
         NSString *likely = vydia.length ? vydia : meta.likelyDistributor;
@@ -256,15 +273,27 @@ static void DFTrackInfo(NSString *trackID, NSString *fallbackName, UIViewControl
                 dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle]);
         }
 
+        NSString *pLine = nil, *cLine = nil;
         NSMutableArray *copyrights = [NSMutableArray array];
         for (NSDictionary *entry in DFArr(albumJSON[@"copyright"])) {
             NSString *text = DFStr(entry[@"text"]);
-            if (text.length) [copyrights addObject:text];
+            NSString *type = [DFStr(entry[@"type"]) uppercaseString];
+            if (text.length) {
+                [copyrights addObject:text];
+                if ([type isEqualToString:@"P"]) pLine = text;
+                if ([type isEqualToString:@"C"]) cLine = text;
+            }
         }
-        if (copyrights.count) {
-            [out appendString:@"\nCopyright\n"];
-            for (NSString *line in copyrights) [out appendFormat:@"• %@\n", line];
+        DFAppend(out, @"℗ line", pLine);
+        DFAppend(out, @"© line", cLine);
+
+        NSArray *images = DFArr(DFDic(albumJSON[@"cover_group"])[@"image"]);
+        NSDictionary *largest = nil;
+        for (NSDictionary *image in images) {
+            if (!largest || [image[@"width"] integerValue] > [largest[@"width"] integerValue]) largest = image;
         }
+        NSString *coverID = DFStr(largest[@"file_id"]);
+        if (coverID.length) DFAppend(out, @"Cover", [@"https://i.scdn.co/image/" stringByAppendingString:coverID]);
 
         if (meta.allowedCountries.count || meta.forbiddenCountries.count) {
             [out appendString:@"\nMetadata restrictions\n"];
