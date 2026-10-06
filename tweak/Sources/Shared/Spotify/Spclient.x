@@ -12,6 +12,7 @@ static NSObject *sg_lock;
 static NSDictionary<NSString *, NSString *> *sg_headers;
 static NSMutableArray<SGSpclientDataObserver> *sg_dataObservers;
 static NSMutableArray<SGSpclientCompletionObserver> *sg_completionObservers;
+static NSMutableArray *sg_readyBlocks;
 
 static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
     if (![request.URL.host.lowercaseString containsString:@"spclient"]) return;
@@ -36,10 +37,19 @@ static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
         if (all[name]) captured[name] = all[name];
     }
 
+    NSArray *ready = nil;
     @synchronized (sg_lock) {
         if ([sg_headers isEqualToDictionary:captured]) return;
+        BOOL first = !sg_headers;
         sg_headers = [captured copy];
+        if (first && sg_readyBlocks.count) {
+            ready = [sg_readyBlocks copy];
+            [sg_readyBlocks removeAllObjects];
+        }
     }
+    if (ready.count) dispatch_async(dispatch_get_main_queue(), ^{
+        for (void (^block)(void) in ready) block();
+    });
     static dispatch_once_t once;
     dispatch_once(&once, ^{ SGLog(@"spclient: captured authenticated Spotify headers"); });
 }
@@ -62,6 +72,16 @@ NSMutableURLRequest *SGSpclientRequest(NSURL *url) {
     }];
     [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
     return request;
+}
+
+void SGSpclientWhenReady(void (^block)(void)) {
+    if (!block) return;
+    BOOL ready;
+    @synchronized (sg_lock) {
+        ready = sg_headers[@"authorization"] != nil;
+        if (!ready) [sg_readyBlocks addObject:[block copy]];
+    }
+    if (ready) dispatch_async(dispatch_get_main_queue(), block);
 }
 
 void SGSpclientAddObserver(SGSpclientDataObserver dataObserver,
@@ -112,6 +132,7 @@ static void completed(NSURLSession *session, NSURLSessionTask *task, NSError *er
     sg_lock = [NSObject new];
     sg_dataObservers = [NSMutableArray array];
     sg_completionObservers = [NSMutableArray array];
+    sg_readyBlocks = [NSMutableArray array];
     %init;
     SGRequireClasses(@[
         @"SPTDataLoaderService",
