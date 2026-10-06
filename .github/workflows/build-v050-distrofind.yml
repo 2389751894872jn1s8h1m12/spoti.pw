@@ -1,0 +1,68 @@
+name: Build spoti.pw 0.50 + DistroFind
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direct link to your decrypted Spotify IPA (9.1.88 recommended for this branch)"
+        required: true
+        type: string
+      upload_method:
+        description: "Where to put the result"
+        default: artifacts
+        type: choice
+        options: [artifacts, filebin, both]
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: levibostian/action-hide-sensitive-inputs@v1
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/checkout@v5
+        with:
+          repository: theos/theos
+          path: theos
+          submodules: recursive
+
+      - name: Install tools
+        run: |
+          brew install make dpkg ldid
+          python3 -m pip install --break-system-packages git+https://github.com/asdfzxcvbn/pyzule-rw.git
+
+      - name: Download Spotify IPA
+        run: |
+          mkdir -p ipa
+          curl -fsSL "${{ inputs.ipa_url }}" -o ipa/spotify.ipa
+          case "$(file --mime-type -b ipa/spotify.ipa)" in
+            application/zip|application/x-ios-app) ;;
+            *) echo "::error::The URL did not return an IPA"; exit 1 ;;
+          esac
+
+      - name: Build official 0.50 + DistroFind
+        run: bash scripts/pipeline-v050-distrofind.sh ipa/spotify.ipa
+
+      - uses: actions/upload-artifact@v5
+        if: inputs.upload_method != 'filebin'
+        with:
+          name: spoti.pw-0.50.0-DistroFind
+          path: out/spoti.pw-0.50.0-DistroFind.ipa
+          if-no-files-found: error
+
+      - name: Upload to filebin.net
+        if: inputs.upload_method != 'artifacts'
+        run: |
+          BIN="distrofind-${{ github.run_id }}"
+          FILE="out/spoti.pw-0.50.0-DistroFind.ipa"
+          curl -fsS -X POST -H "Content-Type: application/octet-stream"             --data-binary "@$FILE" "https://filebin.net/$BIN/$(basename "$FILE")" >/dev/null
+          echo "### DistroFind IPA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- https://filebin.net/$BIN/$(basename "$FILE")" >> "$GITHUB_STEP_SUMMARY"
