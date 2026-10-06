@@ -233,6 +233,7 @@ static SGRPlayerMorph *morphFor(SPTBarOverlayPresentationTransition *transition,
     return morph;
 }
 
+%group SGRLegacyPlayerMorph
 %hook SPTBarOverlayPresentationTransition
 - (void)setProgress:(double)progress {
     %orig;
@@ -248,9 +249,13 @@ static SGRPlayerMorph *morphFor(SPTBarOverlayPresentationTransition *transition,
     %orig;
 }
 %end
+%end
 
 %ctor {
     if (!SGRedesignedUI()) return;
-    %init;
-    SGRequireClasses(@[@"SPTBarOverlayPresentationTransition"]);
+    if (NSClassFromString(@"SPTBarOverlayPresentationTransition")) {
+        %init(SGRLegacyPlayerMorph);
+    } else {
+        SGLog(@"player morph: legacy SPTBarOverlayPresentationTransition is absent; using Spotify's own transition");
+    }
 }
