@@ -165,7 +165,7 @@ static void DFAppend(NSMutableString *out, NSString *name, id value) {
     if ([value isKindOfClass:NSString.class]) text = value;
     else if ([value respondsToSelector:@selector(stringValue)]) text = [value stringValue];
     if (!text.length) return;
-    [out appendFormat:@"%-18@ %@\n", [name stringByAppendingString:@":"], text];
+    [out appendFormat:@"%@ %@\n", [name stringByAppendingString:@":"], text];
 }
 
 static void DFTrackInfo(NSString *trackID, NSString *fallbackName, UIViewController *presenter) {
