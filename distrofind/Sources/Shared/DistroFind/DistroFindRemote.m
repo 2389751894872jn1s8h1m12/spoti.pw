@@ -103,3 +103,51 @@ void DFSpotifyAccountMarket(void (^completion)(NSString *market)) {
         dispatch_async(dispatch_get_main_queue(), ^{ completion(market); });
     }] resume];
 }
+
+void DFSpotifyVisibleArtistReleaseIDs(NSString *artistID, NSString *market,
+                                      void (^completion)(NSSet<NSString *> *, NSError *)) {
+    if (!completion) return;
+    if (artistID.length != 22) {
+        completion(nil, DFRemoteError(3, @"Invalid Spotify artist id"));
+        return;
+    }
+
+    NSMutableSet<NSString *> *ids = [NSMutableSet set];
+    __block NSUInteger offset = 0;
+    __block void (^page)(void);
+    page = ^{
+        NSURLComponents *parts = [NSURLComponents componentsWithString:
+            [NSString stringWithFormat:@"https://api.spotify.com/v1/artists/%@/albums", artistID]];
+        NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray arrayWithArray:@[
+            [NSURLQueryItem queryItemWithName:@"include_groups" value:@"album,single,compilation"],
+            [NSURLQueryItem queryItemWithName:@"limit" value:@"50"],
+            [NSURLQueryItem queryItemWithName:@"offset" value:[NSString stringWithFormat:@"%lu", (unsigned long)offset]],
+        ]];
+        if (market.length == 2) [items addObject:[NSURLQueryItem queryItemWithName:@"market" value:market.uppercaseString]];
+        parts.queryItems = items;
+
+        DFGetJSONAttempt(parts.URL, 0, ^(NSDictionary *json, NSError *error) {
+            if (error || !json) {
+                page = nil;
+                completion(nil, error);
+                return;
+            }
+            NSArray *rows = [json[@"items"] isKindOfClass:NSArray.class] ? json[@"items"] : @[];
+            for (NSDictionary *row in rows) {
+                id sid = [row isKindOfClass:NSDictionary.class] ? row[@"id"] : nil;
+                if ([sid isKindOfClass:NSString.class] && [sid length] == 22) [ids addObject:sid];
+            }
+
+            NSUInteger total = [json[@"total"] respondsToSelector:@selector(unsignedIntegerValue)]
+                ? [json[@"total"] unsignedIntegerValue] : ids.count;
+            offset += rows.count;
+            if (rows.count == 50 && offset < total && offset < 2000) {
+                page();
+            } else {
+                page = nil;
+                completion([ids copy], nil);
+            }
+        });
+    };
+    page();
+}
