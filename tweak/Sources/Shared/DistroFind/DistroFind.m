@@ -93,13 +93,37 @@ static NSArray<NSString *> *artistIDs(NSDictionary *track, NSDictionary *album) 
     return ids;
 }
 
-static NSString *ISRC(NSDictionary *track) {
-    for (NSDictionary *external in array(track[@"external_id"])) {
-        if ([string(external[@"type"]).lowercaseString isEqualToString:@"isrc"]) {
-            return string(external[@"id"]).uppercaseString;
+static NSString *externalID(NSDictionary *object, NSString *kind) {
+    for (NSDictionary *external in array(object[@"external_id"])) {
+        if ([string(external[@"type"]).lowercaseString isEqualToString:kind.lowercaseString]) {
+            return string(external[@"id"]);
         }
     }
     return nil;
+}
+
+static NSString *ISRC(NSDictionary *track) {
+    return externalID(track, @"isrc").uppercaseString;
+}
+
+static NSString *dateText(NSDictionary *object) {
+    NSDictionary *date = dict(object[@"date"]);
+    NSInteger year = [date[@"year"] integerValue];
+    if (!year) return nil;
+    NSInteger month = [date[@"month"] integerValue], day = [date[@"day"] integerValue];
+    if (month && day) return [NSString stringWithFormat:@"%04ld-%02ld-%02ld", (long)year, (long)month, (long)day];
+    if (month) return [NSString stringWithFormat:@"%04ld-%02ld", (long)year, (long)month];
+    return [NSString stringWithFormat:@"%04ld", (long)year];
+}
+
+static NSString *coverURL(NSDictionary *album) {
+    NSArray *images = array(dict(album[@"cover_group"])[@"image"]);
+    NSDictionary *best = nil;
+    for (NSDictionary *image in images) {
+        if (!best || [image[@"width"] integerValue] > [best[@"width"] integerValue]) best = image;
+    }
+    NSString *fileID = string(best[@"file_id"]);
+    return fileID.length ? [@"https://i.scdn.co/image/" stringByAppendingString:fileID] : nil;
 }
 
 static NSDictionary *matchingRule(NSString *uuid, NSArray<NSString *> *labels,
@@ -200,7 +224,18 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
             if (name.length) [names addObject:name];
         }
         meta.artist = [names componentsJoinedByString:@", "];
+        NSDictionary *albumInfo = fullAlbum.count ? fullAlbum : album;
+        meta.albumName = string(albumInfo[@"name"]) ?: string(album[@"name"]) ?: @"";
         meta.label = fullLabel ?: label ?: @"";
+        meta.upc = externalID(albumInfo, @"upc") ?: externalID(album, @"upc") ?: @"";
+        meta.releaseDate = dateText(albumInfo) ?: dateText(album) ?: @"";
+        meta.coverURL = coverURL(albumInfo) ?: coverURL(album) ?: @"";
+        meta.copyrights = [finalCopyrights copy];
+        meta.artistIDs = [[NSOrderedSet orderedSetWithArray:artists] array];
+        meta.durationMs = [track[@"duration"] integerValue];
+        meta.trackNumber = [track[@"number"] integerValue];
+        meta.discNumber = [track[@"disc_number"] integerValue];
+        meta.earliestLiveTimestamp = [track[@"earliest_live_timestamp"] doubleValue] ?: [albumInfo[@"earliest_live_timestamp"] doubleValue];
         meta.licensorUUID = uuid;
         meta.distributor = SGDistroNameForUUID(uuid);
         meta.likelyDistributor = string(finalRule[@"name"]);
@@ -269,6 +304,32 @@ NSString *SGDistroDisplayName(SGDistroMetadata *metadata) {
     return metadata.likelyDistributor.length ? metadata.likelyDistributor
         : (metadata.distributor.length ? metadata.distributor : @"Unknown");
 }
+
+void SGDistroRawMetadataForGID(NSString *kind, NSString *gid,
+                               void (^completion)(NSDictionary *json, NSError *error)) {
+    if (!completion || !kind.length || gid.length != 32) return;
+    void (^go)(void) = ^{
+        fetchJSON(metadataURL(kind, gid), ^(NSDictionary *json, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(json, error); });
+        });
+    };
+    if (SGSpclientHeaders()[@"authorization"]) go();
+    else SGSpclientWhenReady(go);
+}
+
+void SGDistroRawMetadataForSpotifyID(NSString *kind, NSString *spotifyID,
+                                     void (^completion)(NSDictionary *json, NSError *error)) {
+    NSString *gid = SGDistroGIDForSpotifyID(spotifyID);
+    if (!gid) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(nil, [NSError errorWithDomain:@"spoti.pw.distrofind" code:3
+                userInfo:@{NSLocalizedDescriptionKey: @"Invalid Spotify id"}]);
+        });
+        return;
+    }
+    SGDistroRawMetadataForGID(kind, gid, completion);
+}
+
 
 __attribute__((constructor))
 static void SGDistroInit(void) {
