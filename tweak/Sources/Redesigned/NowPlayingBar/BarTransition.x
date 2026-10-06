@@ -86,6 +86,7 @@ static void backWithGlass(UIView *snapshot, UIView *source, NSString *what) {
     if (logged++ < 4) SGLog(@"player transition: %@ stand-in got %lu glass panes", what, (unsigned long)panes.count);
 }
 
+%group SGRLegacyBarTransition
 %hook SPTBarOverlayPresentationTransition
 - (void)setBarSnapshotView:(UIView *)view {
     backWithGlass(view, [self bottomBarView], @"bar");
@@ -96,12 +97,14 @@ static void backWithGlass(UIView *snapshot, UIView *source, NSString *what) {
     %orig;
 }
 %end
+%end
 
 static id ivarNamed(id object, const char *name) {
     Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
     return ivar ? object_getIvar(object, ivar) : nil;
 }
 
+%group SGRCompactBarTransition
 %hook _TtC19MainUI_TabBarUIImpl24CompactOverlayTransition
 - (void)animateTransition:(id)context {
     %orig;
@@ -112,12 +115,14 @@ static id ivarNamed(id object, const char *name) {
     backWithGlass(ivarNamed(self, "tabBarSnapshotView"), ivarNamed(self, "tabBarView"), @"tab bar");
 }
 %end
+%end
 
 %ctor {
     if (!SGRedesignedUI()) return;
-    %init;
-    SGRequireClasses(@[
-        @"SPTBarOverlayPresentationTransition",
-        @"_TtC19MainUI_TabBarUIImpl24CompactOverlayTransition",
-    ]);
+    if (NSClassFromString(@"SPTBarOverlayPresentationTransition")) %init(SGRLegacyBarTransition);
+    if (NSClassFromString(@"_TtC19MainUI_TabBarUIImpl24CompactOverlayTransition")) {
+        %init(SGRCompactBarTransition);
+    } else {
+        SGLog(@"player transition: no compact overlay animator found");
+    }
 }
