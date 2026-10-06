@@ -414,7 +414,10 @@ static void DFResetCell(UIView *cell) {
     UIView *cell = (UIView *)self;
     UIViewController *page = DFPageControllerForView(cell);
     NSString *uri = DFPageURIForController(page);
-    if ([uri hasPrefix:@"spotify:album:"]) DFResolveRow(cell);
+    if ([uri hasPrefix:@"spotify:album:"] &&
+        DFLabelWithIdentifier(cell, @[@"EncoreConsumerMobile.View.Granular.Title"])) {
+        DFResolveRow(cell);
+    }
 }
 - (void)prepareForReuse {
     DFResetCell((UIView *)self);
