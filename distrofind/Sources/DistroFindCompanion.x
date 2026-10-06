@@ -249,6 +249,7 @@ static void DFApplyCell(UIView *cell) {
     objc_setAssociatedObject(cell, &kDFTrackKey, trackID, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     UILabel *badge = DFBadge(cell);
+    badge.hidden = NO;
     SGDistroMetadata *meta = df_metadata[trackID];
     NSString *name = meta ? SGDistroDisplayName(meta) : @"…";
     badge.text = name.length ? name : @"Unknown";
