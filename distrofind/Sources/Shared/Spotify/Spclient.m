@@ -7,6 +7,7 @@
 #import "Core/SGCore.h"
 #import "Spclient.h"
 #import <mach-o/dyld.h>
+#include <stdint.h>
 
 static const uintptr_t kSpoti050AuthLockOffset = 0x3b1168;
 static const uintptr_t kSpoti050AuthorizationOffset = 0x3b11f0;
