@@ -7,7 +7,7 @@
 @end
 
 static NSCache<NSString *, SGDistroMetadata *> *sg_cache;
-static NSMutableDictionary<NSString *, NSMutableArray<SGDistroMetadataCompletion> *> *sg_waiting;
+static NSMutableDictionary<NSString *, NSMutableArray *> *sg_waiting;
 static NSOperationQueue *sg_queue;
 
 static const char kBase62[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -156,7 +156,7 @@ static void fetchJSON(NSURL *url, void (^done)(NSDictionary *, NSError *)) {
 
 static void finish(NSString *trackID, SGDistroMetadata *metadata, NSError *error) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSArray<SGDistroMetadataCompletion> *callbacks = [sg_waiting[trackID] copy];
+        NSArray *callbacks = [sg_waiting[trackID] copy];
         [sg_waiting removeObjectForKey:trackID];
         if (metadata) [sg_cache setObject:metadata forKey:trackID];
         for (SGDistroMetadataCompletion callback in callbacks) callback(metadata, error);
