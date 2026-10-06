@@ -6,7 +6,6 @@
 #import "Shared/DistroFind/DistroFindServer.h"
 #import <objc/message.h>
 
-static __weak id<SPTPlayer> df_player;
 static __weak SPTPlayerTrack *df_currentTrack;
 static NSString *df_currentTrackID;
 static __weak SPTLinkDispatcherImplementation *df_linkDispatcher;
@@ -15,6 +14,12 @@ static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *df_tracksByT
 static NSMutableDictionary<NSString *, SGDistroMetadata *> *df_metadata;
 static NSString *df_filter = @"";
 static char kDFTrackKey, kDFBadgeKey;
+
+static NSString *DFURIString(id uri) {
+    if ([uri isKindOfClass:NSURL.class]) return [(NSURL *)uri absoluteString];
+    if ([uri isKindOfClass:NSString.class]) return uri;
+    return [uri respondsToSelector:@selector(description)] ? [uri description] : nil;
+}
 
 static NSString *DFTrackIDFromURI(id uri) {
     NSString *text = DFURIString(uri);
@@ -707,7 +712,6 @@ static UIButton *DFBarButton(UIViewController *controller) {
 
 %hook SPTEsperantoPlayer
 - (id)state {
-    df_player = self;
     SPTPlayerState *state = %orig;
     SPTPlayerTrack *track = state.track;
     if (track) {
