@@ -511,6 +511,32 @@ void DFShowDistributorFilter(NSString *pageURI, UIViewController *presenter) {
         message:names.count ? @"Show only one distributor on this page." : @"Scroll through some tracks first so DistroFind can identify their distributors."
         preferredStyle:UIAlertControllerStyleActionSheet];
 
+    [alert addAction:[UIAlertAction actionWithTitle:@"Search distributor…" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *a) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIAlertController *search = [UIAlertController alertControllerWithTitle:@"Distributor Filter"
+                    message:@"Type any part of a parent or likely distributor name."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [search addTextFieldWithConfigurationHandler:^(UITextField *field) {
+                    field.placeholder = @"e.g. DistroKid, FUGA, DireNote";
+                    field.text = DFSelectedDistributor(pageURI);
+                    field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+                    field.clearButtonMode = UITextFieldViewModeWhileEditing;
+                }];
+                [search addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+                [search addAction:[UIAlertAction actionWithTitle:@"Apply" style:UIAlertActionStyleDefault
+                    handler:^(__unused UIAlertAction *apply) {
+                        NSString *text = [search.textFields.firstObject.text stringByTrimmingCharactersInSet:
+                            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                        @synchronized (df_pageFilters) {
+                            if (text.length) df_pageFilters[pageURI] = text;
+                            else [df_pageFilters removeObjectForKey:pageURI];
+                        }
+                        DFInvalidateCollectionLayouts(DFPresenter(presenter).view);
+                    }]];
+                DFPresentActionSheet(search, presenter);
+            });
+        }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"All distributors" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *a) {
             @synchronized (df_pageFilters) { [df_pageFilters removeObjectForKey:pageURI]; }
