@@ -14,7 +14,18 @@ static NSMutableArray *sg_dataObservers;
 static NSMutableArray *sg_completionObservers;
 static NSMutableArray *sg_readyBlocks;
 
+static void ensureStorage(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sg_lock = [NSObject new];
+        sg_dataObservers = [NSMutableArray array];
+        sg_completionObservers = [NSMutableArray array];
+        sg_readyBlocks = [NSMutableArray array];
+    });
+}
+
 static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
+    ensureStorage();
     if (![request.URL.host.lowercaseString containsString:@"spclient"]) return;
 
     NSMutableDictionary<NSString *, NSString *> *all = [NSMutableDictionary dictionary];
@@ -55,10 +66,12 @@ static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
 }
 
 NSDictionary<NSString *, NSString *> *SGSpclientHeaders(void) {
+    ensureStorage();
     @synchronized (sg_lock) { return [sg_headers copy]; }
 }
 
 NSString *SGSpclientAuthorization(void) {
+    ensureStorage();
     @synchronized (sg_lock) { return sg_headers[@"authorization"]; }
 }
 
@@ -76,6 +89,7 @@ NSMutableURLRequest *SGSpclientRequest(NSURL *url) {
 
 void SGSpclientWhenReady(void (^block)(void)) {
     if (!block) return;
+    ensureStorage();
     BOOL ready;
     @synchronized (sg_lock) {
         ready = sg_headers[@"authorization"] != nil;
@@ -86,6 +100,7 @@ void SGSpclientWhenReady(void (^block)(void)) {
 
 void SGSpclientAddObserver(SGSpclientDataObserver dataObserver,
                            SGSpclientCompletionObserver completionObserver) {
+    ensureStorage();
     @synchronized (sg_lock) {
         if (dataObserver) [sg_dataObservers addObject:[dataObserver copy]];
         if (completionObserver) [sg_completionObservers addObject:[completionObserver copy]];
@@ -93,6 +108,7 @@ void SGSpclientAddObserver(SGSpclientDataObserver dataObserver,
 }
 
 static void received(NSURLSession *session, NSURLSessionTask *task, NSData *data) {
+    ensureStorage();
     rememberHeaders(session, task.currentRequest);
     NSArray *observers;
     @synchronized (sg_lock) { observers = [sg_dataObservers copy]; }
@@ -100,6 +116,7 @@ static void received(NSURLSession *session, NSURLSessionTask *task, NSData *data
 }
 
 static void completed(NSURLSession *session, NSURLSessionTask *task, NSError *error) {
+    ensureStorage();
     rememberHeaders(session, task.currentRequest);
     NSArray *observers;
     @synchronized (sg_lock) { observers = [sg_completionObservers copy]; }
@@ -129,10 +146,7 @@ static void completed(NSURLSession *session, NSURLSessionTask *task, NSError *er
 %end
 
 %ctor {
-    sg_lock = [NSObject new];
-    sg_dataObservers = [NSMutableArray array];
-    sg_completionObservers = [NSMutableArray array];
-    sg_readyBlocks = [NSMutableArray array];
+    ensureStorage();
     %init;
     SGRequireClasses(@[
         @"SPTDataLoaderService",
