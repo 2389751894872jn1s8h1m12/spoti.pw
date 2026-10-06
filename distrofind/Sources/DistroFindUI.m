@@ -510,7 +510,7 @@ static void DFRegionedReleasesUI(NSString *artistID, UIViewController *presenter
                         NSMutableArray<DFArtistRelease *> *hidden = [NSMutableArray array];
                         NSMutableArray<DFArtistRelease *> *locked = [NSMutableArray array];
                         for (DFArtistRelease *release in releases) {
-                            BOOL isHidden = visibleIDs.count && release.releaseID.length &&
+                            BOOL isHidden = visibleIDs != nil && release.releaseID.length &&
                                 ![visibleIDs containsObject:release.releaseID];
                             BOOL blocked = DFReleaseUnavailableInMarket(release, market);
                             SGDistroAvailability *regions = release.releaseID.length ? availability[release.releaseID] : nil;
