@@ -8,6 +8,7 @@
 #import "Lyrics.h"
 #import "Shared/LockScreenLyrics/LockScreenLyrics.h"
 #import "Shared/LyricsSources/LyricsSources.h"
+#import "Shared/Spotify/Spclient.h"
 #import "Headers/SPTPlayer.h"
 
 static const NSUInteger kKeptTracks = 40;
@@ -15,16 +16,12 @@ static const NSUInteger kSeenTracks = 200;
 // A track whose request was lost may be asked for again after this long, twice as long after each loss
 // in a row up to the most: soon enough for the song still playing, not so soon that a busy server is pressed.
 static const NSTimeInterval kRetryPause = 10, kRetryPauseMost = 60;
-// What spclient needs from a request to answer it as the signed-in app.
-static NSString *const kSpclientHeaders[] = {@"authorization", @"client-token", @"app-platform", @"spotify-app-version", @"user-agent", @"accept-language"};
-
 static NSMutableDictionary<NSString *, NSArray<SGKaraokeLine *> *> *sg_lyrics;
 static NSMutableSet<NSString *> *sg_requested;
 // Of those, the ones with a request still out or waiting out its pause. A full cache spares their lines
 // and leaves them asked for, so no second request runs beside the first.
 static NSMutableSet<NSString *> *sg_asking;
 static NSMutableDictionary<NSString *, NSNumber *> *sg_losses;   // requests lost in a row, by track
-static NSDictionary<NSString *, NSString *> *sg_spclientHeaders;
 static __weak id sg_player;
 // Every track the player has reported, by id, so a source can name a track that is not the one
 // playing at the moment it is asked: a lyrics request routinely lands a beat before the player
@@ -42,24 +39,6 @@ static NSString *trackInURL(NSURL *url) {
     if (marker.location == NSNotFound) return nil;
     NSString *track = [[path substringFromIndex:NSMaxRange(marker)] componentsSeparatedByString:@"/"].firstObject;
     return track.length ? track : nil;
-}
-
-static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
-    if (![request.URL.host containsString:@"spclient"]) return;
-    NSMutableDictionary<NSString *, NSString *> *all = [NSMutableDictionary dictionary];
-    [session.configuration.HTTPAdditionalHeaders enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
-        if ([key isKindOfClass:NSString.class] && [value isKindOfClass:NSString.class]) all[[key lowercaseString]] = value;
-    }];
-    [request.allHTTPHeaderFields enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
-        all[key.lowercaseString] = value;
-    }];
-    if (!all[@"authorization"]) return;
-    NSMutableDictionary<NSString *, NSString *> *headers = [NSMutableDictionary dictionary];
-    for (NSUInteger i = 0; i < sizeof(kSpclientHeaders) / sizeof(*kSpclientHeaders); i++) {
-        NSString *name = kSpclientHeaders[i];
-        if (all[name]) headers[name] = all[name];
-    }
-    dispatch_async(dispatch_get_main_queue(), ^{ sg_spclientHeaders = headers; });
 }
 
 static SPTPlayerState *playerState(void);
@@ -95,7 +74,6 @@ void SGKaraokeKeepLines(NSString *track, NSArray<SGKaraokeLine *> *lines) {
 }
 
 static void received(NSURLSession *session, NSURLSessionTask *task, NSData *data) {
-    rememberHeaders(session, task.currentRequest);
     if (sg_ownSources || !trackInURL(task.currentRequest.URL)) return;
     NSMutableData *body = objc_getAssociatedObject(task, &kBodyKey);
     if (!body) objc_setAssociatedObject(task, &kBodyKey, (body = [NSMutableData data]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -135,20 +113,15 @@ static void askAgainLater(NSString *trackID) {
 }
 
 NSString *SGKaraokeSpotifyAuthorization(void) {
-    return sg_spclientHeaders[@"authorization"];
+    return SGSpclientAuthorization();
 }
 
 static void requestFromSpotify(NSString *trackID) {
-    NSDictionary<NSString *, NSString *> *headers = sg_spclientHeaders;
-    if (!headers) return;
+    NSString *address = [NSString stringWithFormat:@"https://spclient.wg.spotify.com/color-lyrics/v2/track/%@?format=json&vocalRemoval=false&market=from_token", trackID];
+    NSMutableURLRequest *request = SGSpclientRequest([NSURL URLWithString:address]);
+    if (!request) return;
     [sg_requested addObject:trackID];
     [sg_asking addObject:trackID];
-    NSString *address = [NSString stringWithFormat:@"https://spclient.wg.spotify.com/color-lyrics/v2/track/%@?format=json&vocalRemoval=false&market=from_token", trackID];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:address]];
-    [headers enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSString *value, BOOL *stop) {
-        [request setValue:value forHTTPHeaderField:name];
-    }];
-    [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
     // The mod's own, so LyricsHook's request hook does not send it to the donor.
     [NSURLProtocol setProperty:@YES forKey:SGLyricsOwnRequestKey inRequest:request];
     [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *body, NSURLResponse *response, NSError *error) {
@@ -295,28 +268,6 @@ static void prefetch(SPTPlayerTrack *track, NSString *trackID, SPTPlayerState *s
 }
 %end
 
-%hook SPTDataLoaderService
-- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
-    received(session, task, data);
-    %orig;
-}
-- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    completed(task, error);
-    %orig;
-}
-%end
-
-%hook _TtC26Connectivity_HttpClientKit20HttpClientURLSession
-- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
-    received(session, task, data);
-    %orig;
-}
-- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    completed(task, error);
-    %orig;
-}
-%end
-
 %ctor {
     // The sources that search by name learn the name from the player, so the player is caught
     // whenever one is on, not only for the redesign's lyrics and the lock screen.
@@ -327,10 +278,11 @@ static void prefetch(SPTPlayerTrack *track, NSString *trackID, SPTPlayerState *s
     sg_asking = [NSMutableSet set];
     sg_losses = [NSMutableDictionary dictionary];
     sg_ownSources = SGLyricsEnabled();
+    SGSpclientAddObserver(
+        ^(NSURLSession *session, NSURLSessionTask *task, NSData *data) { received(session, task, data); },
+        ^(NSURLSessionTask *task, NSError *error) { completed(task, error); }
+    );
     %init;
     SGLog(@"karaoke: on");
-    SGRequireClasses(@[
-        @"SPTEsperantoPlayer", @"SPTPlayerState",
-        @"SPTDataLoaderService", @"_TtC26Connectivity_HttpClientKit20HttpClientURLSession",
-    ]);
+    SGRequireClasses(@[@"SPTEsperantoPlayer", @"SPTPlayerState"]);
 }
