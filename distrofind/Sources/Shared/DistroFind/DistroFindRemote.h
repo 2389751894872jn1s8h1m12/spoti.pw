@@ -11,3 +11,8 @@ void DFSpotifyMetadataJSONForGID(NSString *kind, NSString *gid, DFJSONCompletion
 
 // The signed-in account market when Spotify's own token permits /v1/me; device locale is the fallback.
 void DFSpotifyAccountMarket(void (^completion)(NSString *market));
+
+// Market-scoped visible release ids from Spotify's Web API. Failure is non-fatal for Regioned
+// Releases; metadata/4 still supplies the complete release set.
+void DFSpotifyVisibleArtistReleaseIDs(NSString *artistID, NSString *market,
+                                      void (^completion)(NSSet<NSString *> *releaseIDs, NSError *error));
