@@ -5,6 +5,7 @@
 #import "Shared/DistroFind/DistroFind.h"
 #import "Shared/DistroFind/DistroFindServer.h"
 #import <objc/message.h>
+#include <stdlib.h>
 
 #pragma mark - Shared badge UI
 
