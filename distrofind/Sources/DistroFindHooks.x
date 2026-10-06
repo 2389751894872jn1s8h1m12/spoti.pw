@@ -373,7 +373,8 @@ static UICollectionViewLayoutAttributes *DFFilterAttributes(UIView *cell, UIColl
     NSString *pageURI = objc_getAssociatedObject(cell, &kRowPageKey);
     NSString *selected = DFSelectedDistributor(pageURI);
     NSString *distro = objc_getAssociatedObject(cell, &kRowDistroKey);
-    if (selected.length && distro.length && ![selected isEqualToString:distro]) {
+    if (selected.length && distro.length &&
+        [distro rangeOfString:selected options:NSCaseInsensitiveSearch].location == NSNotFound) {
         UICollectionViewLayoutAttributes *copy = [attributes copy];
         copy.size = CGSizeMake(copy.size.width, 0);
         copy.alpha = 0;
