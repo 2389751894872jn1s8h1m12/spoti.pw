@@ -1,0 +1,27 @@
+name: DistroFind compile check
+
+on:
+  push:
+    branches: [feat/distrofind-ios]
+  workflow_dispatch:
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+
+jobs:
+  tweak:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        with:
+          repository: theos/theos
+          path: theos
+          submodules: recursive
+
+      - name: Install build tools
+        run: brew install make dpkg ldid
+
+      - name: Build tweak
+        run: env -u MAKELEVEL gmake -C tweak clean package
