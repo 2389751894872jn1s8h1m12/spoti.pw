@@ -10,8 +10,8 @@ static NSString *const kHeaders[] = {
 
 static NSObject *sg_lock;
 static NSDictionary<NSString *, NSString *> *sg_headers;
-static NSMutableArray<SGSpclientDataObserver> *sg_dataObservers;
-static NSMutableArray<SGSpclientCompletionObserver> *sg_completionObservers;
+static NSMutableArray *sg_dataObservers;
+static NSMutableArray *sg_completionObservers;
 static NSMutableArray *sg_readyBlocks;
 
 static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
@@ -94,14 +94,14 @@ void SGSpclientAddObserver(SGSpclientDataObserver dataObserver,
 
 static void received(NSURLSession *session, NSURLSessionTask *task, NSData *data) {
     rememberHeaders(session, task.currentRequest);
-    NSArray<SGSpclientDataObserver> *observers;
+    NSArray *observers;
     @synchronized (sg_lock) { observers = [sg_dataObservers copy]; }
     for (SGSpclientDataObserver observer in observers) observer(session, task, data);
 }
 
 static void completed(NSURLSession *session, NSURLSessionTask *task, NSError *error) {
     rememberHeaders(session, task.currentRequest);
-    NSArray<SGSpclientCompletionObserver> *observers;
+    NSArray *observers;
     @synchronized (sg_lock) { observers = [sg_completionObservers copy]; }
     for (SGSpclientCompletionObserver observer in observers) observer(task, error);
 }
