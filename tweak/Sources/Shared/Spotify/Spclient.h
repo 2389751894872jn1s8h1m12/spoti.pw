@@ -16,6 +16,10 @@ NSString *SGSpclientAuthorization(void);
 // A request carrying the latest captured Spotify headers, or nil until headers are available.
 NSMutableURLRequest *SGSpclientRequest(NSURL *url);
 
+// Runs on the main queue as soon as an authenticated header set exists. If Spotify has already
+// made a request, the block runs immediately; otherwise it is kept once and released after capture.
+void SGSpclientWhenReady(void (^block)(void));
+
 // Receives the same response chunks/completions Spotify's delegates receive. Intended for the
 // existing lyrics cache, which needs the raw body of Spotify's own color-lyrics requests.
 void SGSpclientAddObserver(SGSpclientDataObserver dataObserver,
