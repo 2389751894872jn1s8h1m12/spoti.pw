@@ -23,13 +23,22 @@ static void DFStyleBadge(UIButton *button, CGFloat fontSize) {
     [button setTitleColor:[UIColor colorWithRed:0.70 green:0.90 blue:1.0 alpha:1] forState:UIControlStateNormal];
 }
 
+static NSString *DFCompositeDistro(SGDistroMetadata *meta, NSString *sub) {
+    NSString *parent = meta.distributor;
+    NSString *likely = sub.length ? sub : meta.likelyDistributor;
+    if (parent.length && likely.length) return [NSString stringWithFormat:@"%@ → %@", parent, likely];
+    if (likely.length) return likely;
+    if (parent.length) return parent;
+    return meta.licensorUUID.length ? @"Unknown" : @"?";
+}
+
 static NSString *DFDisplayNameWithVydia(SGDistroMetadata *meta, void (^updated)(NSString *name)) {
-    NSString *name = SGDistroDisplayName(meta);
+    NSString *name = DFCompositeDistro(meta, nil);
     if (![meta.licensorUUID.lowercaseString isEqualToString:@"9c290842b7fa4396bb0dcb3ad95634f5"] ||
         meta.likelyDistributor.length || !meta.albumID.length) return name;
 
     SGDistroVydiaSubDistributor(meta.albumID, @"", meta.artist, ^(NSString *sub) {
-        if (sub.length && updated) updated(sub);
+        if (sub.length && updated) updated(DFCompositeDistro(meta, sub));
     });
     return name;
 }
