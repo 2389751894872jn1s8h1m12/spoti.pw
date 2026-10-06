@@ -473,114 +473,143 @@ static BOOL DFAvailabilityBlocksMarket(SGDistroAvailability *result, NSString *m
 static void DFRegionedReleasesUI(NSString *artistID, UIViewController *presenter) {
     DFPanelController *panel = DFShowPanel(@"Regioned Releases", @"Reading your Spotify market…", presenter);
     DFSpotifyAccountMarket(^(NSString *market) {
-        [panel setPanelBody:[NSString stringWithFormat:@"Scanning releases for %@…",
+        [panel setPanelBody:[NSString stringWithFormat:@"Reading visible releases for %@…",
             market.length ? market : @"your market"]];
 
-        DFScanArtist(artistID, ^(NSUInteger completed, NSUInteger total) {
-            [panel setPanelBody:[NSString stringWithFormat:@"Reading releases… %lu/%lu",
-                (unsigned long)completed, (unsigned long)total]];
-        }, ^(NSArray<DFArtistRelease *> *releases, NSError *error) {
-            if (error) {
-                [panel setPanelBody:error.localizedDescription];
-                return;
-            }
-            if (!releases.count) {
-                [panel setPanelBody:@"No releases found for this artist."];
-                return;
-            }
+        DFSpotifyVisibleArtistReleaseIDs(artistID, market,
+            ^(NSSet<NSString *> *visibleIDs, NSError *visibleError) {
+                // A mobile token can refuse the Web API endpoint. In that case the complete metadata
+                // scan and region checks still run; only the "hidden by Spotify" distinction is absent.
+                if (visibleError) visibleIDs = nil;
 
-            NSMutableDictionary<NSString *, SGDistroAvailability *> *availability = [NSMutableDictionary dictionary];
-            NSMutableSet<NSString *> *unknown = [NSMutableSet set];
-            __block NSUInteger next = 0, finished = 0, active = 0;
-            __block void (^pump)(void);
-            __block void (^finishAll)(void);
-
-            finishAll = ^{
-                NSMutableArray<DFArtistRelease *> *locked = [NSMutableArray array];
-                for (DFArtistRelease *release in releases) {
-                    BOOL blocked = DFReleaseUnavailableInMarket(release, market);
-                    SGDistroAvailability *regions = release.releaseID.length ? availability[release.releaseID] : nil;
-                    if (DFAvailabilityBlocksMarket(regions, market)) blocked = YES;
-                    if (blocked) [locked addObject:release];
-                }
-
-                [locked sortUsingComparator:^NSComparisonResult(DFArtistRelease *a, DFArtistRelease *b) {
-                    SGDistroAvailability *ar = availability[a.releaseID];
-                    SGDistroAvailability *br = availability[b.releaseID];
-                    NSUInteger ac = ar.available.count, bc = br.available.count;
-                    if (ac != bc) return ac < bc ? NSOrderedAscending : NSOrderedDescending;
-                    return [a.name compare:b.name options:NSCaseInsensitiveSearch];
-                }];
-
-                NSMutableString *out = [NSMutableString stringWithFormat:
-                    @"Market: %@\n%lu regioned release%@ of %lu checked\n",
-                    market.length ? market : @"Unknown",
-                    (unsigned long)locked.count, locked.count == 1 ? @"" : @"s",
-                    (unsigned long)(releases.count - unknown.count)];
-
-                if (unknown.count) {
-                    [out appendFormat:@"%lu release%@ couldn't be checked completely.\n",
-                        (unsigned long)unknown.count, unknown.count == 1 ? @"" : @"s"];
-                }
-
-                for (DFArtistRelease *release in locked) {
-                    SGDistroAvailability *regions = availability[release.releaseID];
-                    NSString *where = nil;
-                    if ([regions.kind isEqualToString:@"gone"]) {
-                        where = @"Taken down / not playable";
-                    } else if (regions.available.count) {
-                        where = [NSString stringWithFormat:@"Playable in %lu Spotify markets",
-                            (unsigned long)regions.available.count];
-                    } else if (DFReleaseUnavailableInMarket(release, market)) {
-                        where = @"Not available in your market";
-                    } else {
-                        where = @"Region restricted";
+                [panel setPanelBody:@"Reading the artist's complete release list…"];
+                DFScanArtist(artistID, ^(NSUInteger completed, NSUInteger total) {
+                    [panel setPanelBody:[NSString stringWithFormat:@"Reading releases… %lu/%lu",
+                        (unsigned long)completed, (unsigned long)total]];
+                }, ^(NSArray<DFArtistRelease *> *releases, NSError *error) {
+                    if (error) {
+                        [panel setPanelBody:error.localizedDescription];
+                        return;
                     }
-                    [out appendFormat:@"\n%@%@\n%@ · %@\n%@\nspotify:album:%@\n",
-                        release.name,
-                        release.year.length ? [NSString stringWithFormat:@" (%@)", release.year] : @"",
-                        DFReleaseDisplayDistributor(release),
-                        release.label.length ? release.label : release.type,
-                        where,
-                        release.releaseID ?: @""];
-                }
-
-                if (!locked.count) {
-                    [out appendString:@"\nNo regioned releases were found in the artist metadata or availability checks."];
-                }
-                [panel setPanelBody:out];
-            };
-
-            pump = ^{
-                while (active < 4 && next < releases.count) {
-                    DFArtistRelease *release = releases[next++];
-                    if (!release.firstTrackID.length) {
-                        [unknown addObject:release.releaseID ?: release.gid ?: release.name];
-                        finished++;
-                        continue;
+                    if (!releases.count) {
+                        [panel setPanelBody:@"No releases found for this artist."];
+                        return;
                     }
 
-                    active++;
-                    SGDistroAvailabilityForTrack(release.firstTrackID,
-                        ^(SGDistroAvailability *result, NSError *availabilityError) {
-                            active--;
-                            finished++;
-                            if (result && release.releaseID.length) availability[release.releaseID] = result;
-                            else [unknown addObject:release.releaseID ?: release.gid ?: release.name];
+                    NSMutableDictionary<NSString *, SGDistroAvailability *> *availability = [NSMutableDictionary dictionary];
+                    NSMutableSet<NSString *> *unknown = [NSMutableSet set];
+                    __block NSUInteger next = 0, finished = 0, active = 0;
+                    __block BOOL rendered = NO;
+                    __block void (^pump)(void);
+                    __block void (^finishAll)(void);
 
-                            if (finished % 3 == 0 || finished == releases.count) {
-                                [panel setPanelBody:[NSString stringWithFormat:@"Checking regions… %lu/%lu",
-                                    (unsigned long)finished, (unsigned long)releases.count]];
+                    finishAll = ^{
+                        if (rendered) return;
+                        rendered = YES;
+
+                        NSMutableArray<DFArtistRelease *> *hidden = [NSMutableArray array];
+                        NSMutableArray<DFArtistRelease *> *locked = [NSMutableArray array];
+                        for (DFArtistRelease *release in releases) {
+                            BOOL isHidden = visibleIDs.count && release.releaseID.length &&
+                                ![visibleIDs containsObject:release.releaseID];
+                            BOOL blocked = DFReleaseUnavailableInMarket(release, market);
+                            SGDistroAvailability *regions = release.releaseID.length ? availability[release.releaseID] : nil;
+                            if (DFAvailabilityBlocksMarket(regions, market)) blocked = YES;
+
+                            if (isHidden) [hidden addObject:release];
+                            else if (blocked) [locked addObject:release];
+                        }
+
+                        NSComparator sorter = ^NSComparisonResult(DFArtistRelease *a, DFArtistRelease *b) {
+                            SGDistroAvailability *ar = availability[a.releaseID];
+                            SGDistroAvailability *br = availability[b.releaseID];
+                            NSUInteger ac = ar.available.count, bc = br.available.count;
+                            if (ac != bc) return ac < bc ? NSOrderedAscending : NSOrderedDescending;
+                            NSComparisonResult year = [b.year ?: @"" compare:a.year ?: @"" options:NSNumericSearch];
+                            return year != NSOrderedSame ? year : [a.name compare:b.name options:NSCaseInsensitiveSearch];
+                        };
+                        [hidden sortUsingComparator:sorter];
+                        [locked sortUsingComparator:sorter];
+
+                        NSMutableString *out = [NSMutableString stringWithFormat:@"Market: %@\n",
+                            market.length ? market : @"Unknown"];
+                        if (visibleIDs) {
+                            [out appendFormat:@"%lu hidden by Spotify in this market\n", (unsigned long)hidden.count];
+                        } else {
+                            [out appendString:@"Spotify's visible-release endpoint was unavailable; hidden/visible labels are omitted.\n"];
+                        }
+                        [out appendFormat:@"%lu additional regioned release%@\n",
+                            (unsigned long)locked.count, locked.count == 1 ? @"" : @"s"];
+
+                        if (unknown.count) {
+                            [out appendFormat:@"%lu release%@ couldn't be checked completely.\n",
+                                (unsigned long)unknown.count, unknown.count == 1 ? @"" : @"s"];
+                        }
+
+                        void (^appendRelease)(DFArtistRelease *, NSString *) =
+                            ^(DFArtistRelease *release, NSString *prefix) {
+                                SGDistroAvailability *regions = availability[release.releaseID];
+                                NSString *where = nil;
+                                if ([regions.kind isEqualToString:@"gone"]) {
+                                    where = @"Taken down / not playable";
+                                } else if (regions.available.count) {
+                                    where = [NSString stringWithFormat:@"Playable in %lu Spotify markets",
+                                        (unsigned long)regions.available.count];
+                                } else if (DFReleaseUnavailableInMarket(release, market)) {
+                                    where = @"Not available in your market";
+                                } else {
+                                    where = prefix;
+                                }
+                                [out appendFormat:@"\n%@%@%@\n%@ · %@\n%@\nspotify:album:%@\n",
+                                    prefix.length ? [prefix stringByAppendingString:@" · "] : @"",
+                                    release.name,
+                                    release.year.length ? [NSString stringWithFormat:@" (%@)", release.year] : @"",
+                                    DFReleaseDisplayDistributor(release),
+                                    release.label.length ? release.label : release.type,
+                                    where ?: @"Region restricted",
+                                    release.releaseID ?: @""];
+                            };
+
+                        for (DFArtistRelease *release in hidden) appendRelease(release, @"Hidden");
+                        for (DFArtistRelease *release in locked) appendRelease(release, @"Regioned");
+
+                        if (!hidden.count && !locked.count) {
+                            [out appendString:@"\nNo regioned releases were found."];
+                        }
+                        [panel setPanelBody:out];
+                    };
+
+                    pump = ^{
+                        while (active < 4 && next < releases.count) {
+                            DFArtistRelease *release = releases[next++];
+                            if (!release.firstTrackID.length) {
+                                [unknown addObject:release.releaseID ?: release.gid ?: release.name];
+                                finished++;
+                                continue;
                             }
-                            if (finished >= releases.count) finishAll();
-                            else pump();
-                        });
-                }
 
-                if (next >= releases.count && active == 0 && finished >= releases.count) finishAll();
-            };
-            pump();
-        });
+                            active++;
+                            SGDistroAvailabilityForTrack(release.firstTrackID,
+                                ^(SGDistroAvailability *result, NSError *availabilityError) {
+                                    active--;
+                                    finished++;
+                                    if (result && release.releaseID.length) availability[release.releaseID] = result;
+                                    else [unknown addObject:release.releaseID ?: release.gid ?: release.name];
+
+                                    if (finished % 3 == 0 || finished == releases.count) {
+                                        [panel setPanelBody:[NSString stringWithFormat:@"Checking regions… %lu/%lu",
+                                            (unsigned long)finished, (unsigned long)releases.count]];
+                                    }
+                                    if (finished >= releases.count) finishAll();
+                                    else pump();
+                                });
+                        }
+
+                        if (next >= releases.count && active == 0 && finished >= releases.count) finishAll();
+                    };
+                    pump();
+                });
+            });
     });
 }
 
