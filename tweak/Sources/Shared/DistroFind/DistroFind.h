@@ -14,6 +14,16 @@
 @property (nonatomic, copy) NSString *likelyDistributor;
 @property (nonatomic, copy) NSString *isrc;
 @property (nonatomic, copy) NSString *albumID;
+@property (nonatomic, copy) NSString *albumName;
+@property (nonatomic, copy) NSString *upc;
+@property (nonatomic, copy) NSString *releaseDate;
+@property (nonatomic, copy) NSString *coverURL;
+@property (nonatomic, copy) NSArray<NSString *> *copyrights;
+@property (nonatomic, copy) NSArray<NSString *> *artistIDs;
+@property (nonatomic) NSInteger durationMs;
+@property (nonatomic) NSInteger trackNumber;
+@property (nonatomic) NSInteger discNumber;
+@property (nonatomic) NSTimeInterval earliestLiveTimestamp;
 @property (nonatomic, copy) NSArray<NSString *> *allowedCountries;
 @property (nonatomic, copy) NSArray<NSString *> *forbiddenCountries;
 @end
@@ -30,3 +40,11 @@ NSString *SGDistroDisplayName(SGDistroMetadata *metadata);
 // Base62 Spotify id <-> 32-character metadata gid helpers.
 NSString *SGDistroGIDForSpotifyID(NSString *spotifyID);
 NSString *SGDistroSpotifyIDForGID(NSString *gid);
+
+
+// Raw authenticated metadata helpers used by Artist Scan / Regioned Releases.
+// kind is "track", "album" or "artist". Completion is delivered on the main queue.
+void SGDistroRawMetadataForSpotifyID(NSString *kind, NSString *spotifyID,
+                                     void (^completion)(NSDictionary *json, NSError *error));
+void SGDistroRawMetadataForGID(NSString *kind, NSString *gid,
+                               void (^completion)(NSDictionary *json, NSError *error));
