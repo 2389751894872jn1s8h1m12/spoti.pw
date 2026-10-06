@@ -1,0 +1,27 @@
+name: Compile DistroFind companion
+
+on:
+  push:
+    branches: [feat/distrofind-v050-full]
+  workflow_dispatch:
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        with:
+          repository: theos/theos
+          path: theos
+          submodules: recursive
+
+      - name: Install tools
+        run: brew install make dpkg ldid
+
+      - name: Build companion
+        run: env -u MAKELEVEL gmake -C distrofind clean package
