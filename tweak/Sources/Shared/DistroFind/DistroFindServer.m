@@ -4,7 +4,7 @@
 
 static NSString *const kServer = @"https://ds-production-a43b.up.railway.app";
 static NSString *const kTermAPI = @"https://term.christmas/api/spotify_availability";
-static NSString *const kServerKeyPreference = @"spotifyglass.distrofindServerKey";
+static NSString *const kPublicServerKey = @"Carti123!";
 
 @implementation SGDistroAvailability
 @end
@@ -13,8 +13,7 @@ static NSCache<NSString *, SGDistroAvailability *> *sg_availabilityCache;
 static NSCache<NSString *, NSString *> *sg_vydiaCache;
 
 static NSString *serverKey(void) {
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kServerKeyPreference];
-    return [value isKindOfClass:NSString.class] && [value length] ? value : nil;
+    return kPublicServerKey;
 }
 
 static NSArray<NSString *> *spotifyMarkets(void) {
@@ -108,7 +107,7 @@ void SGDistroAvailabilityForTrack(NSString *trackID, SGDistroAvailabilityComplet
             return;
         }
 
-        // Keep the desktop extension's Railway fallback when its key was configured out-of-band.
+        // Keep the desktop extension's Railway fallback with the public extension key.
         if (!serverKey().length) {
             NSError *finalError = error ?: distroError(status ?: 2, @"Could not read track availability");
             onMain(^{ completion(nil, finalError); });
