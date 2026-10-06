@@ -755,7 +755,10 @@ static UIButton *DFBarButton(UIViewController *controller) {
 %end
 
 %hook _TtC35ListUXPlatform_FreeTierPlaylistImpl25ElementCollectionViewCell
-- (void)layoutSubviews { %orig; DFApplyCell((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    DFApplyCell((UIView *)self);
+}
 - (UICollectionViewLayoutAttributes *)preferredLayoutAttributesFittingAttributes:(UICollectionViewLayoutAttributes *)attributes {
     UICollectionViewLayoutAttributes *result = %orig;
     if (DFShouldCollapse((UIView *)self)) result.size = CGSizeMake(result.size.width, 0.01);
@@ -772,7 +775,10 @@ static UIButton *DFBarButton(UIViewController *controller) {
 %end
 
 %hook _TtC12Element_List18CollectionViewCell
-- (void)layoutSubviews { %orig; DFApplyCell((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    DFApplyCell((UIView *)self);
+}
 - (UICollectionViewLayoutAttributes *)preferredLayoutAttributesFittingAttributes:(UICollectionViewLayoutAttributes *)attributes {
     UICollectionViewLayoutAttributes *result = %orig;
     if (DFShouldCollapse((UIView *)self)) result.size = CGSizeMake(result.size.width, 0.01);
