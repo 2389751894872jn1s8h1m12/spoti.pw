@@ -13,8 +13,7 @@ static NSCache<NSString *, SGDistroAvailability *> *sg_availabilityCache;
 static NSCache<NSString *, NSString *> *sg_vydiaCache;
 
 static NSString *serverKey(void) {
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kServerKeyPreference];
-    return [value isKindOfClass:NSString.class] && [value length] ? value : nil;
+    return kServerKey;
 }
 
 static NSArray<NSString *> *spotifyMarkets(void) {
