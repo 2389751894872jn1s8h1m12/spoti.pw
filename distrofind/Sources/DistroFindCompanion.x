@@ -18,6 +18,7 @@ static NSString *DFCurrentTrackID(void);
 static NSObject *df_playbackLock;
 static NSString *df_lastQueuedTrackID;
 static BOOL df_stateCheckQueued;
+static CFAbsoluteTime df_lastPlaybackPoll;
 static BOOL df_refreshQueued;
 static NSMutableDictionary<NSString *, NSMutableArray *> *df_pendingLookups;
 static void DFPresentDashboard(NSString *trackID);
@@ -804,7 +805,9 @@ static UIButton *DFBarButton(UIViewController *controller) {
 
     BOOL schedule = NO;
     @synchronized(df_playbackLock) {
-        if (!df_stateCheckQueued) {
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (!df_stateCheckQueued && now - df_lastPlaybackPoll >= 0.35) {
+            df_lastPlaybackPoll = now;
             df_stateCheckQueued = YES;
             schedule = YES;
         }
