@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 THEOS="${THEOS:-$HOME/theos}"
+COMPANION="${DISTROFIND_COMPANION:-1}"
+if [[ "$COMPANION" != "0" && "$COMPANION" != "1" ]]; then
+  echo "DISTROFIND_COMPANION must be 0 or 1" >&2
+  exit 1
+fi
 KIT_URL="${KIT_URL:-https://github.com/skopevoj/spoti.pw/releases/download/v0.50.0/spoti.pw-0.50.0-kit.zip}"
 
 IN="" OUT=""
@@ -33,7 +38,8 @@ SPOTIFY_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$INFO")"
 HOST_BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$INFO")"
 HOST_SHORT_VERSION="$SPOTIFY_VERSION"
 HOST_VERSION="$(plutil -extract CFBundleVersion raw -o - "$INFO")"
-OUT="${OUT:-$ROOT/out/spoti.pw-0.50.0-distrofind-Spotify-$SPOTIFY_VERSION.ipa}"
+if [ "$COMPANION" = "1" ]; then MODE="distrofind"; else MODE="kit-only"; fi
+OUT="${OUT:-$ROOT/out/spoti.pw-0.50.0-$MODE-Spotify-$SPOTIFY_VERSION.ipa}"
 
 echo "==> Spotify $SPOTIFY_VERSION"
 echo "==> official spoti.pw 0.50.0 kit + DistroFind"
@@ -102,19 +108,26 @@ with open(path, "wb") as f:
     plistlib.dump(p, f, fmt=plistlib.FMT_XML)
 PY
 
-echo "==> building DistroFind companion"
-export THEOS
-env -u MAKELEVEL gmake -C "$ROOT/distrofind" clean package
-DF_DEB="$(ls -t "$ROOT"/distrofind/packages/*.deb | head -1)"
-echo "    $DF_DEB"
-
 SPOTIGLASS="$KIT_DIR/files/Frameworks/spotifyglass.dylib"
 APPGROUPS="$KIT_DIR/files/Frameworks/SpotifyGlassAppGroups.dylib"
 LIVE="$EXT_DIR/SpotifyGlassLiveActivity.appex"
+INJECT=("$SPOTIGLASS" "$APPGROUPS")
 
-echo "==> injecting official 0.50.0 + DistroFind"
+if [ "$COMPANION" = "1" ]; then
+  echo "==> building DistroFind companion"
+  export THEOS
+  env -u MAKELEVEL gmake -C "$ROOT/distrofind" clean package
+  DF_DEB="$(ls -t "$ROOT"/distrofind/packages/*.deb | head -1)"
+  echo "    $DF_DEB"
+  INJECT+=("$DF_DEB")
+else
+  echo "==> diagnostic mode: official kit ONLY; no DistroFind companion"
+fi
+INJECT+=("$LIVE")
+
+echo "==> injecting official 0.50.0 with mode $MODE"
 cyan -i "$IN" -o "$OUT" \
-  -f "$SPOTIGLASS" "$APPGROUPS" "$DF_DEB" "$LIVE" \
+  -f "${INJECT[@]}" \
   -l "$MERGE_PLIST" \
   -w -s --overwrite
 
