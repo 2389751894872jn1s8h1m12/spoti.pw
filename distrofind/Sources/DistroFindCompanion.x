@@ -129,7 +129,12 @@ static void DFResolve(NSString *trackID, void (^completion)(SGDistroMetadata *me
 
     SGDistroMetadataForTrack(trackID, ^(SGDistroMetadata *meta, NSError *error) {
         void (^finish)(SGDistroMetadata *, NSError *) = ^(SGDistroMetadata *resolved, NSError *failure) {
-            if (resolved) df_metadata[trackID] = resolved;
+            if (resolved) {
+                df_metadata[trackID] = resolved;
+                SGLog(@"DistroFind metadata ready for a track");
+            } else if (failure) {
+                SGLog(@"DistroFind metadata lookup failed, status %ld", (long)failure.code);
+            }
             NSArray *callbacks = [df_pendingLookups[trackID] copy];
             [df_pendingLookups removeObjectForKey:trackID];
             if (resolved) DFRefreshVisible();
@@ -818,6 +823,7 @@ static UIButton *DFBarButton(UIViewController *controller) {
             if (changed) {
                 df_currentTrack = track;
                 df_currentTrackID = [trackID copy];
+                SGLog(@"DistroFind queued new playing track");
                 DFRememberTrack(track);
                 DFResolve(trackID, nil);
                 DFRefreshVisible();
