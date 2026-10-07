@@ -14,6 +14,7 @@ static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *df_tracksByT
 static NSMutableDictionary<NSString *, SGDistroMetadata *> *df_metadata;
 static NSString *df_filter = @"";
 static char kDFTrackKey, kDFBadgeKey;
+static NSString *DFCurrentTrackID(void);
 static NSObject *df_playbackLock;
 static NSString *df_lastQueuedTrackID;
 static BOOL df_refreshQueued;
