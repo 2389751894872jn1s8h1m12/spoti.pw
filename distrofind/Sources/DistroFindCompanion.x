@@ -17,6 +17,7 @@ static char kDFTrackKey, kDFBadgeKey;
 static NSObject *df_playbackLock;
 static NSString *df_lastQueuedTrackID;
 static BOOL df_refreshQueued;
+static NSMutableDictionary<NSString *, NSMutableArray *> *df_pendingLookups;
 static void DFPresentDashboard(NSString *trackID);
 
 static NSString *DFURIString(id uri) {
@@ -92,25 +93,49 @@ static void DFRefreshVisible(void) {
     });
 }
 
+// Coalesce requests from player state, row layout, and the mini-player.
+// Each track is fetched once regardless of how many layout passes occur.
 static void DFResolve(NSString *trackID, void (^completion)(SGDistroMetadata *meta, NSError *error)) {
-    if (!trackID.length) { if (completion) completion(nil, nil); return; }
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ DFResolve(trackID, completion); });
+        return;
+    }
+    if (!trackID.length) {
+        if (completion) completion(nil, nil);
+        return;
+    }
     SGDistroMetadata *cached = df_metadata[trackID];
-    if (cached) { if (completion) completion(cached, nil); return; }
+    if (cached) {
+        if (completion) completion(cached, nil);
+        return;
+    }
+    NSMutableArray *pending = df_pendingLookups[trackID];
+    if (pending) {
+        if (completion) [pending addObject:[completion copy]];
+        return;
+    }
+    pending = [NSMutableArray array];
+    if (completion) [pending addObject:[completion copy]];
+    df_pendingLookups[trackID] = pending;
+
     SGDistroMetadataForTrack(trackID, ^(SGDistroMetadata *meta, NSError *error) {
-        if (!meta || error) { if (completion) completion(meta, error); return; }
-        void (^finish)(void) = ^{
-            df_metadata[trackID] = meta;
-            DFRefreshVisible();
-            if (completion) completion(meta, nil);
+        void (^finish)(SGDistroMetadata *, NSError *) = ^(SGDistroMetadata *resolved, NSError *failure) {
+            if (resolved) df_metadata[trackID] = resolved;
+            NSArray *callbacks = [df_pendingLookups[trackID] copy];
+            [df_pendingLookups removeObjectForKey:trackID];
+            if (resolved) DFRefreshVisible();
+            for (void (^callback)(SGDistroMetadata *, NSError *) in callbacks)
+                callback(resolved, failure);
         };
-        if ([meta.licensorUUID isEqualToString:@"9c290842b7fa4396bb0dcb3ad95634f5"] &&
+        if (meta && !error &&
+            [meta.licensorUUID isEqualToString:@"9c290842b7fa4396bb0dcb3ad95634f5"] &&
             !meta.likelyDistributor.length && meta.albumID.length) {
             SGDistroVydiaSubDistributor(meta.albumID, meta.albumName, meta.artist, ^(NSString *sub) {
                 if (sub.length) meta.likelyDistributor = sub;
-                finish();
+                finish(meta, nil);
             });
         } else {
-            finish();
+            finish(meta, error);
         }
     });
 }
@@ -227,8 +252,12 @@ static NSString *DFTrackIDInObject(id object, NSInteger depth, NSHashTable *seen
 }
 
 static NSString *DFTrackForCell(UIView *cell, NSString *title, NSString *artist) {
-    NSString *graph = DFTrackIDInObject(cell, 4, [NSHashTable weakObjectsHashTable]);
-    if (graph) return graph;
+    // Swift object ivar reflection is expensive and can touch unsafe layout.
+    // It remains opt-in solely for diagnostic builds.
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"distrofind.experimentalRowIntrospection"]) {
+        NSString *graph = DFTrackIDInObject(cell, 3, [NSHashTable weakObjectsHashTable]);
+        if (graph) return graph;
+    }
     NSString *exact = df_trackByKey[DFKey(title, artist)];
     if (exact) return exact;
     NSSet *ids = df_tracksByTitle[DFNormalize(title)];
@@ -297,12 +326,7 @@ static void DFApplyCell(UIView *cell) {
     BOOL reject = DFFilterRejects(meta);
     cell.alpha = reject ? 0.15 : 1;
     cell.userInteractionEnabled = !reject;
-    if (!meta) {
-        __weak UIView *weakCell = cell;
-        DFResolve(trackID, ^(SGDistroMetadata *resolved, NSError *error) {
-            if ([objc_getAssociatedObject(weakCell, &kDFTrackKey) isEqualToString:trackID]) [weakCell setNeedsLayout];
-        });
-    }
+    if (!meta) DFResolve(trackID, nil);
 }
 
 static BOOL DFShouldCollapse(UIView *cell) {
@@ -801,7 +825,7 @@ static UIButton *DFBarButton(UIViewController *controller) {
     CGFloat width = MIN(116, MAX(64, [name sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}].width + 16));
     CGRect bounds = controller.view.bounds;
     button.frame = CGRectMake(MAX(56, bounds.size.width - width - 52), MAX(2, bounds.size.height - 19), width, 16);
-    if (trackID.length && !meta) DFResolve(trackID, ^(SGDistroMetadata *m, NSError *e) { [controller.view setNeedsLayout]; });
+    if (trackID.length && !meta) DFResolve(trackID, nil);
 }
 %end
 
@@ -812,7 +836,6 @@ static UIButton *DFBarButton(UIViewController *controller) {
 }
 - (UICollectionViewLayoutAttributes *)preferredLayoutAttributesFittingAttributes:(UICollectionViewLayoutAttributes *)attributes {
     UICollectionViewLayoutAttributes *result = %orig;
-    if (DFShouldCollapse((UIView *)self)) result.size = CGSizeMake(result.size.width, 0.01);
     return result;
 }
 - (void)prepareForReuse {
@@ -848,6 +871,7 @@ static UIButton *DFBarButton(UIViewController *controller) {
 
 %ctor {
     df_playbackLock = [NSObject new];
+    df_pendingLookups = [NSMutableDictionary dictionary];
     df_trackByKey = [NSMutableDictionary dictionary];
     df_tracksByTitle = [NSMutableDictionary dictionary];
     df_metadata = [NSMutableDictionary dictionary];
