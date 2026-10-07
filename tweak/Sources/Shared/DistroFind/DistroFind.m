@@ -74,10 +74,13 @@ static BOOL textMatches(NSDictionary *rule, NSString *text) {
     if (!text.length) return NO;
     NSString *needle = string(rule[@"match"]);
     if (!needle.length) return NO;
-    if ([rule[@"caseSensitive"] boolValue]) return [text containsString:needle];
-    NSString *left = text.lowercaseString, *right = needle.lowercaseString;
-    if ([rule[@"exact"] boolValue]) return [left isEqualToString:right];
-    if ([rule[@"prefix"] boolValue]) return [left hasPrefix:right];
+    NSString *left = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *right = needle;
+    if ([rule[@"exact"] boolValue]) return [left.lowercaseString isEqualToString:right.lowercaseString];
+    if ([rule[@"prefix"] boolValue]) return [left.lowercaseString hasPrefix:right.lowercaseString];
+    if ([rule[@"caseSensitive"] boolValue]) return [left containsString:right];
+    left = left.lowercaseString;
+    right = right.lowercaseString;
     return [left containsString:right];
 }
 
@@ -126,24 +129,53 @@ static NSString *coverURL(NSDictionary *album) {
     return fileID.length ? [@"https://i.scdn.co/image/" stringByAppendingString:fileID] : nil;
 }
 
+static NSArray<NSDictionary *> *orderedRules(NSString *uuid) {
+    NSArray *all = SGDistroLikelyRulesForUUID(uuid);
+    NSMutableArray *byArtist = [NSMutableArray array], *byCode = [NSMutableArray array], *byLabel = [NSMutableArray array];
+    for (NSDictionary *rule in all) {
+        if ([rule[@"rename"] boolValue]) continue;
+        if (array(rule[@"artists"]).count) [byArtist addObject:rule];
+        else if (string(rule[@"isrcPrefix"]).length || string(rule[@"upcPrefix"]).length) [byCode addObject:rule];
+        else [byLabel addObject:rule];
+    }
+    return [[byArtist arrayByAddingObjectsFromArray:byCode] arrayByAddingObjectsFromArray:byLabel];
+}
+
 static NSDictionary *matchingRule(NSString *uuid, NSArray<NSString *> *labels,
                                   NSArray<NSString *> *copyrights,
-                                  NSArray<NSString *> *artists, NSString *isrc) {
-    for (NSDictionary *rule in SGDistroLikelyRulesForUUID(uuid)) {
-        NSString *prefix = string(rule[@"isrcPrefix"]);
-        if (prefix.length) {
-            if ([isrc hasPrefix:prefix.uppercaseString]) return rule;
-            continue;
-        }
+                                  NSArray<NSString *> *artists,
+                                  NSString *isrc, NSString *upc) {
+    for (NSDictionary *rule in orderedRules(uuid)) {
         NSArray *wantedArtists = array(rule[@"artists"]);
         if (wantedArtists.count) {
             for (NSString *artist in wantedArtists) if ([artists containsObject:artist]) return rule;
+            continue;
+        }
+        NSString *upcPrefix = string(rule[@"upcPrefix"]);
+        if (upcPrefix.length) {
+            if ([upc hasPrefix:upcPrefix]) return rule;
+            continue;
+        }
+        NSString *isrcPrefix = string(rule[@"isrcPrefix"]);
+        if (isrcPrefix.length) {
+            if ([isrc hasPrefix:isrcPrefix.uppercaseString]) return rule;
             continue;
         }
         for (NSString *label in labels) if (textMatches(rule, label)) return rule;
         if ([rule[@"inCopyright"] boolValue]) {
             for (NSString *copyright in copyrights) if (textMatches(rule, copyright)) return rule;
         }
+    }
+    return nil;
+}
+
+static NSString *renamedDistributor(NSString *uuid,
+                                    NSArray<NSString *> *labels,
+                                    NSArray<NSString *> *copyrights) {
+    for (NSDictionary *rule in SGDistroLikelyRulesForUUID(uuid)) {
+        if (![rule[@"rename"] boolValue]) continue;
+        for (NSString *label in labels) if (textMatches(rule, label)) return string(rule[@"name"]);
+        for (NSString *line in copyrights) if (textMatches(rule, line)) return string(rule[@"name"]);
     }
     return nil;
 }
@@ -202,7 +234,8 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
     }
     NSArray<NSString *> *artists = artistIDs(track, album);
     NSString *isrc = ISRC(track);
-    NSDictionary *rule = matchingRule(uuid, labels, copyrights, artists, isrc);
+    NSString *upc = externalID(album, @"upc");
+    NSDictionary *rule = matchingRule(uuid, labels, copyrights, artists, isrc, upc);
 
     void (^build)(NSDictionary *) = ^(NSDictionary *fullAlbum) {
         NSMutableArray *finalLabels = [labels mutableCopy];
@@ -213,7 +246,8 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
             NSString *text = string(entry[@"text"]);
             if (text.length && ![finalCopyrights containsObject:text]) [finalCopyrights addObject:text];
         }
-        NSDictionary *finalRule = rule ?: matchingRule(uuid, finalLabels, finalCopyrights, artists, isrc);
+        NSString *finalUPC = externalID(fullAlbum, @"upc") ?: upc;
+        NSDictionary *finalRule = rule ?: matchingRule(uuid, finalLabels, finalCopyrights, artists, isrc, finalUPC);
 
         SGDistroMetadata *meta = [SGDistroMetadata new];
         meta.trackID = trackID;
@@ -239,6 +273,10 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
         meta.licensorUUID = uuid;
         meta.distributor = SGDistroNameForUUID(uuid);
         meta.likelyDistributor = string(finalRule[@"name"]);
+        if (!finalRule) {
+            NSString *renamed = renamedDistributor(uuid, finalLabels, finalCopyrights);
+            if (renamed.length) meta.distributor = renamed;
+        }
         meta.isrc = isrc;
         NSString *albumGID = string(album[@"gid"]);
         meta.albumID = SGDistroSpotifyIDForGID(albumGID);
@@ -249,10 +287,14 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
     };
 
     NSArray *rules = SGDistroLikelyRulesForUUID(uuid);
-    BOOL needsCopyright = NO;
-    for (NSDictionary *candidate in rules) if ([candidate[@"inCopyright"] boolValue]) { needsCopyright = YES; break; }
+    BOOL needsCopyright = NO, needsUPC = NO, needsRename = NO;
+    for (NSDictionary *candidate in rules) {
+        if ([candidate[@"inCopyright"] boolValue]) needsCopyright = YES;
+        if (string(candidate[@"upcPrefix"]).length) needsUPC = YES;
+        if ([candidate[@"rename"] boolValue]) needsRename = YES;
+    }
     NSString *albumGID = string(album[@"gid"]);
-    if (!rule && albumGID.length && (!label.length || (needsCopyright && !copyrights.count))) {
+    if (albumGID.length && ((!rule && (!label.length || (needsCopyright && !copyrights.count) || (needsUPC && !upc.length))) || needsRename)) {
         fetchJSON(metadataURL(@"album", albumGID), ^(NSDictionary *fullAlbum, NSError *error) {
             build(fullAlbum ?: @{});
         });
