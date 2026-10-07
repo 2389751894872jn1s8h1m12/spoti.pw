@@ -14,6 +14,9 @@ static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *df_tracksByT
 static NSMutableDictionary<NSString *, SGDistroMetadata *> *df_metadata;
 static NSString *df_filter = @"";
 static char kDFTrackKey, kDFBadgeKey;
+static NSObject *df_playbackLock;
+static NSString *df_lastQueuedTrackID;
+static BOOL df_refreshQueued;
 static void DFPresentDashboard(NSString *trackID);
 
 static NSString *DFURIString(id uri) {
@@ -40,8 +43,14 @@ static NSString *DFKey(NSString *title, NSString *artist) {
     return [NSString stringWithFormat:@"%@\n%@", DFNormalize(title), DFNormalize(artist)];
 }
 
+// Spotify can call its player getters from playback threads. Do not touch
+// trackTitle/artistName in a metadata hook or force UIKit to relayout there.
 static void DFRememberTrack(SPTPlayerTrack *track) {
     if (!track) return;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ DFRememberTrack(track); });
+        return;
+    }
     NSString *trackID = DFTrackIDFromURI(track.URI);
     if (!trackID.length) return;
     NSString *title = track.trackTitle ?: @"";
@@ -55,22 +64,31 @@ static void DFRememberTrack(SPTPlayerTrack *track) {
     }
 }
 
+// Update visible rows only, and coalesce bursts of metadata completions.
+// Invalidating every collection layout and every subview caused a layout
+// feedback loop when playback updated the now-playing bar.
 static void DFRefreshVisible(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (UIWindow *window in UIApplication.sharedApplication.windows) {
-            [window setNeedsLayout];
-            NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
-            while (stack.count) {
-                UIView *view = stack.lastObject;
-                [stack removeLastObject];
-                if ([view isKindOfClass:UICollectionView.class]) {
-                    UICollectionView *cv = (UICollectionView *)view;
-                    [cv.collectionViewLayout invalidateLayout];
+        if (df_refreshQueued) return;
+        df_refreshQueued = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            df_refreshQueued = NO;
+            for (UIWindow *window in UIApplication.sharedApplication.windows) {
+                [window setNeedsLayout];
+                NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
+                NSUInteger visited = 0;
+                while (stack.count && visited++ < 1800) {
+                    UIView *view = stack.lastObject;
+                    [stack removeLastObject];
+                    if ([view isKindOfClass:UICollectionView.class]) {
+                        for (UICollectionViewCell *cell in ((UICollectionView *)view).visibleCells)
+                            [cell setNeedsLayout];
+                    }
+                    [stack addObjectsFromArray:view.subviews];
                 }
-                [view setNeedsLayout];
-                [stack addObjectsFromArray:view.subviews];
             }
-        }
+        });
     });
 }
 
@@ -734,28 +752,33 @@ static UIButton *DFBarButton(UIViewController *controller) {
     return button;
 }
 
+// The old SPTEsperantoPlayer -state hook called track metadata getters
+// synchronously, and the SPTPlayerTrack -metadata hook could recursively
+// re-enter those getters as soon as playback began. Keep this hook minimal.
 %hook SPTEsperantoPlayer
 - (id)state {
     SPTPlayerState *state = %orig;
     SPTPlayerTrack *track = state.track;
-    if (track) {
-        DFRememberTrack(track);
-        NSString *trackID = DFTrackIDFromURI(track.URI);
-        if (trackID.length && ![trackID isEqualToString:df_currentTrackID]) {
-            df_currentTrack = track;
-            df_currentTrackID = [trackID copy];
-            DFResolve(trackID, nil);
+    NSString *trackID = track ? DFTrackIDFromURI(track.URI) : nil;
+    if (!trackID.length) return state;
+
+    BOOL changed = NO;
+    @synchronized(df_playbackLock) {
+        if (![trackID isEqualToString:df_lastQueuedTrackID]) {
+            df_lastQueuedTrackID = [trackID copy];
+            changed = YES;
         }
     }
+    if (changed) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            df_currentTrack = track;
+            df_currentTrackID = [trackID copy];
+            DFRememberTrack(track);
+            DFResolve(trackID, nil);
+            DFRefreshVisible();
+        });
+    }
     return state;
-}
-%end
-
-%hook SPTPlayerTrack
-- (NSDictionary *)metadata {
-    NSDictionary *metadata = %orig;
-    DFRememberTrack(self);
-    return metadata;
 }
 %end
 
@@ -824,6 +847,7 @@ static UIButton *DFBarButton(UIViewController *controller) {
 %end
 
 %ctor {
+    df_playbackLock = [NSObject new];
     df_trackByKey = [NSMutableDictionary dictionary];
     df_tracksByTitle = [NSMutableDictionary dictionary];
     df_metadata = [NSMutableDictionary dictionary];
@@ -831,7 +855,6 @@ static UIButton *DFBarButton(UIViewController *controller) {
     SGLog(@"full companion loaded");
     SGRequireClasses(@[
         @"SPTEsperantoPlayer",
-        @"SPTPlayerTrack",
         @"SPTLinkDispatcherImplementation",
         @"_TtC18NowPlaying_BarImpl27NowPlayingBarViewController",
         @"_TtC35ListUXPlatform_FreeTierPlaylistImpl25ElementCollectionViewCell",
