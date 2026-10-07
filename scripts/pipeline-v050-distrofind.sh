@@ -62,6 +62,28 @@ for rel, wanted in kit.get("integrity", {}).items():
 print("    kit integrity OK")
 PY
 
+echo "==> preparing official 0.50 Info.plist merge"
+MERGE_PLIST="$ROOT/out/.v050-merge.plist"
+python3 - "$INFO" "$KIT_DIR/kit.json" "$MERGE_PLIST" <<'PY'
+import json, plistlib, sys
+info_path, kit_path, out_path = sys.argv[1:4]
+with open(info_path, "rb") as f:
+    host = plistlib.load(f)
+with open(kit_path, "r", encoding="utf-8") as f:
+    rules = json.load(f).get("infoPlist", {})
+patch = dict(rules.get("set", {}))
+for key, values in rules.get("union", {}).items():
+    merged = list(host.get(key, [])) if isinstance(host.get(key), list) else []
+    for value in values:
+        if value not in merged:
+            merged.append(value)
+    patch[key] = merged
+for key, value in rules.get("default", {}).items():
+    patch[key] = host.get(key, value)
+with open(out_path, "wb") as f:
+    plistlib.dump(patch, f, fmt=plistlib.FMT_XML, sort_keys=True)
+PY
+
 echo "==> preparing Live Activity extension"
 EXT_DIR="$ROOT/out/v050-extension"
 rm -rf "$EXT_DIR"
@@ -93,7 +115,7 @@ LIVE="$EXT_DIR/SpotifyGlassLiveActivity.appex"
 echo "==> injecting official 0.50.0 + DistroFind"
 cyan -i "$IN" -o "$OUT" \
   -f "$SPOTIGLASS" "$APPGROUPS" "$DF_DEB" "$LIVE" \
-  -l "$ROOT/plist/v050-kit.plist" \
+  -l "$MERGE_PLIST" \
   -w -s --overwrite
 
 echo "==> loading App Groups shim in Spotify widget"
@@ -112,5 +134,5 @@ fi
 echo "==> merging official 0.50.0 App Intents"
 "$ROOT/scripts/merge-appintents.py" "$OUT" "$APP_DIR" "$KIT_DIR/appintents"
 
-rm -f "$INFO"
+rm -f "$INFO" "$MERGE_PLIST"
 echo "==> done: $OUT"
