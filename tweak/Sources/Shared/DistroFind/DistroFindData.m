@@ -64,7 +64,7 @@ static NSDictionary<NSString *, NSString *> *distributors(void) {
         @"8337a6aeaca744a7b32050f0c66e138f": @"Warner Music Group",
         @"7cbd8bc71a55423d9df777bc3a694bbe": @"BMG",
         @"a830a34f35844bd784eac9a7fb395996": @"TuneCore",
-        @"af064b03a15e4224ab24764efe200841": @"Create Music Group/Label Engine",
+        @"af064b03a15e4224ab24764efe200841": @"Label Engine",
         @"18fbcef4fb624fc58d4a7fdd230bd523": @"DistroKid",
         @"1564813dc9d246388befd3f3c50e4909": @"DisKover",
         @"7cd978677487466fb9aea2f219ba290b": @"iGroove AG",
@@ -145,7 +145,7 @@ static NSDictionary<NSString *, NSString *> *distributors(void) {
         @"3e041287bad444f7853ad9fbf62cc0ef": @"Kaseta Digital",
         @"76963aa0372f4512a21af55e3cc558fb": @"Triple Vision Records Distribution",
         @"717d9e64496c453daf3aaf2b6968d8bd": @"Beggars Group",
-        @"a487b60b717849d8bd2be071a9b573c0": @"EngineEars",
+        @"a487b60b717849d8bd2be071a9b573c0": @"Supply Chain Music LLC",
     }; });
     return table;
 }
@@ -209,6 +209,23 @@ static NSArray<NSDictionary *> *likelyRules(void) {
         @{@"parent": @"0c06d78a83ce4770b8a41b0459448a04", @"match": @"DireNote", @"name": @"DireNote", @"exact": @YES},
         @{@"parent": @"0a768a0fc630464d8862f7a2c6b0c9e6", @"match": @"imusician", @"name": @"iMusician", @"prefix": @YES},
         @{@"parent": @"0a768a0fc630464d8862f7a2c6b0c9e6", @"match": @"@isrc:ch", @"name": @"iMusician", @"isrcPrefix": @"CH"},
+        @{@"parent": @"af064b03a15e4224ab24764efe200841", @"match": @"@isrc:mxa", @"name": @"WHOSTRY", @"isrcPrefix": @"MXA"},
+        @{@"parent": @"e5627993ff8d48b59dfa9b39505640b5", @"match": @"@upc:558", @"name": @"Releese", @"upcPrefix": @"558"},
+        @{@"parent": @"af064b03a15e4224ab24764efe200841", @"match": @"/ create music group inc.", @"name": @"Create Music Group", @"inCopyright": @YES, @"rename": @YES},
+        @{@"parent": @"60315a5bfaa04520a1ee142e2df5b8ca", @"match": @"onchain music", @"name": @"OnChain"},
+        @{@"parent": @"ffb2c5e7bae04301b176bd7a5e3be782", @"match": @"nudacy records", @"name": @"Nudacy (AS Deal)"},
+        @{@"parent": @"ffb2c5e7bae04301b176bd7a5e3be782", @"match": @"zcaller", @"name": @"ZCaller"},
+        @{@"parent": @"c71b29ea9e1e48c6931da2dd7c0bf5d5", @"match": @"zcaller music", @"name": @"ZCaller/MusicDash"},
+        @{@"parent": @"a487b60b717849d8bd2be071a9b573c0", @"match": @"distributed by engineears", @"name": @"EngineEars", @"inCopyright": @YES},
+        @{@"parent": @"ffb2c5e7bae04301b176bd7a5e3be782", @"match": @"@isrc:hkc", @"name": @"Kanjian", @"isrcPrefix": @"HKC"},
+        @{@"parent": @"ffb2c5e7bae04301b176bd7a5e3be782", @"match": @"distribuido por mmba s.a.s", @"name": @"MMBA", @"inCopyright": @YES},
+        @{@"parent": @"eae6ebae4e7e47ee90d53af206b74984", @"match": @"syce", @"name": @"SYCE"},
+        @{@"parent": @"dca8cd5a4e4e4cd8a12609a0b30bd52d", @"match": @"@artists:kamapro", @"name": @"Kamapro", @"artists": @[@"0g0ZYLiNYI4kMg8MX76bkN", @"4GK74dyUdNHHeQv4bQOpZi", @"13dwAO1RvOUUEywGjozQSr"]},
+        @{@"parent": @"af064b03a15e4224ab24764efe200841", @"match": @"isekai records", @"name": @"broke"},
+        @{@"parent": @"af064b03a15e4224ab24764efe200841", @"match": @"evo79", @"name": @"broke"},
+        @{@"parent": @"af064b03a15e4224ab24764efe200841", @"match": @"dreamsoda", @"name": @"broke"},
+        @{@"parent": @"af064b03a15e4224ab24764efe200841", @"match": @"@artists:broke", @"name": @"broke", @"artists": @[@"5ySK6tR70ZunnmPEHCrCwF"]},
+        @{@"parent": @"*", @"match": @"@artists:broke-all", @"name": @"broke", @"artists": @[@"6PxIBIC6X6ABCIXnAgGUdc"]},
         @{@"parent": @"ffb2c5e7bae04301b176bd7a5e3be782", @"match": @"@artists:kicklabel", @"name": @"KickLabel", @"artists": @[@"5ySK6tR70ZunnmPEHCrCwF"]},
         @{@"parent": @"3f1980e65bb740b89118d2c5806d3c7d", @"match": @"@artists:sixxtune", @"name": @"Sixxtune", @"artists": @[@"4HgDMcGZhCANiEiWNGE32j", @"6kQZyWgAMsM7U7vRlWLYd2"]},
     ]; });
@@ -223,7 +240,7 @@ NSArray<NSDictionary *> *SGDistroLikelyRulesForUUID(NSString *uuid) {
     if (!uuid.length) return @[];
     NSString *parent = uuid.lowercaseString;
     NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *rule, NSDictionary *bindings) {
-        return [rule[@"parent"] isEqualToString:parent];
+        return [rule[@"parent"] isEqualToString:parent] || [rule[@"parent"] isEqualToString:@"*"];
     }];
     return [likelyRules() filteredArrayUsingPredicate:predicate];
 }
