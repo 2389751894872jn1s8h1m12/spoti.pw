@@ -14,6 +14,7 @@ static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *df_tracksByT
 static NSMutableDictionary<NSString *, SGDistroMetadata *> *df_metadata;
 static NSString *df_filter = @"";
 static char kDFTrackKey, kDFBadgeKey;
+static void DFPresentDashboard(NSString *trackID);
 
 static NSString *DFURIString(id uri) {
     if ([uri isKindOfClass:NSURL.class]) return [(NSURL *)uri absoluteString];
@@ -216,17 +217,28 @@ static NSString *DFTrackForCell(UIView *cell, NSString *title, NSString *artist)
     return ids.count == 1 ? ids.anyObject : nil;
 }
 
-static UILabel *DFBadge(UIView *cell) {
-    UILabel *badge = objc_getAssociatedObject(cell, &kDFBadgeKey);
+@interface DFBadgeLabel : UILabel
+@property (nonatomic, copy) NSString *trackID;
+@end
+
+@implementation DFBadgeLabel
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    if (self.trackID.length) DFPresentDashboard(self.trackID);
+}
+@end
+
+static DFBadgeLabel *DFBadge(UIView *cell) {
+    DFBadgeLabel *badge = objc_getAssociatedObject(cell, &kDFBadgeKey);
     if (!badge) {
-        badge = [UILabel new];
+        badge = [DFBadgeLabel new];
         badge.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
         badge.textAlignment = NSTextAlignmentCenter;
         badge.textColor = [UIColor colorWithWhite:1 alpha:0.88];
         badge.backgroundColor = [UIColor colorWithWhite:1 alpha:0.13];
         badge.layer.cornerRadius = 6;
         badge.clipsToBounds = YES;
-        badge.userInteractionEnabled = NO;
+        badge.userInteractionEnabled = YES;
         badge.layer.zPosition = 50;
         [cell addSubview:badge];
         objc_setAssociatedObject(cell, &kDFBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -253,7 +265,8 @@ static void DFApplyCell(UIView *cell) {
     if (!trackID.length) return;
     objc_setAssociatedObject(cell, &kDFTrackKey, trackID, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
-    UILabel *badge = DFBadge(cell);
+    DFBadgeLabel *badge = DFBadge(cell);
+    badge.trackID = trackID;
     badge.hidden = NO;
     SGDistroMetadata *meta = df_metadata[trackID];
     NSString *name = meta ? SGDistroDisplayName(meta) : @"…";
@@ -454,12 +467,19 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 @interface DFDashboardController : UITableViewController
+@property (nonatomic, copy) NSString *trackID;
 @property (nonatomic, strong) SGDistroMetadata *meta;
+- (instancetype)initWithTrackID:(NSString *)trackID;
 @end
 
 @implementation DFDashboardController
 
-- (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
+- (instancetype)init { return [self initWithTrackID:DFCurrentTrackID()]; }
+
+- (instancetype)initWithTrackID:(NSString *)trackID {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) _trackID = [trackID copy];
+    return self;
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -471,7 +491,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 
 - (void)reloadMetadata {
-    NSString *trackID = DFCurrentTrackID();
+    NSString *trackID = self.trackID;
     if (!trackID.length) { [self.tableView reloadData]; return; }
     DFResolve(trackID, ^(SGDistroMetadata *meta, NSError *error) {
         self.meta = meta;
@@ -497,8 +517,8 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
     NSString *duration = m.durationMs > 0 ? [NSString stringWithFormat:@"%ld:%02ld", (long)(m.durationMs / 60000), (long)((m.durationMs / 1000) % 60)] : @"—";
     NSString *live = m.earliestLiveTimestamp > 0 ? [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:m.earliestLiveTimestamp] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle] : @"—";
     return @[
-        m.title ?: df_currentTrack.trackTitle ?: @"—",
-        m.artist ?: df_currentTrack.artistName ?: @"—",
+        m.title ?: ([self.trackID isEqualToString:DFCurrentTrackID()] ? df_currentTrack.trackTitle : nil) ?: @"—",
+        m.artist ?: ([self.trackID isEqualToString:DFCurrentTrackID()] ? df_currentTrack.artistName : nil) ?: @"—",
         SGDistroDisplayName(m) ?: @"Loading…",
         m.distributor ?: @"—",
         m.likelyDistributor ?: @"—",
@@ -548,7 +568,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 - (void)availability {
-    NSString *trackID = DFCurrentTrackID();
+    NSString *trackID = self.trackID;
     SGDistroAvailabilityForTrack(trackID, ^(SGDistroAvailability *result, NSError *error) {
         if (!result || error) { [self showError:error title:@"Availability"]; return; }
         NSString *text = [NSString stringWithFormat:@"Status: %@\n\nAvailable: %lu markets\nBlocked: %lu markets\n\nAvailable markets\n%@\n\nBlocked markets\n%@",
@@ -559,7 +579,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 - (void)otherVersions {
-    NSString *trackID = DFCurrentTrackID();
+    NSString *trackID = self.trackID;
     SGDistroOtherVersionsForTrack(trackID, ^(NSDictionary *result, NSError *error) {
         if (!result || error) { [self showError:error title:@"Other Versions"]; return; }
         NSArray *links = DFArray(result[@"links"]);
@@ -591,7 +611,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 - (void)performance {
-    SGDistroPerformanceImageForTrack(DFCurrentTrackID(), ^(UIImage *image, NSString *message, NSError *error) {
+    SGDistroPerformanceImageForTrack(self.trackID, ^(UIImage *image, NSString *message, NSError *error) {
         if (error && !message.length) { [self showError:error title:@"Performance"]; return; }
         DFImageController *vc = [[DFImageController alloc] initWithTitle:@"Performance" image:image message:message];
         [self.navigationController pushViewController:vc animated:YES];
@@ -667,7 +687,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
         if (indexPath.row == 0) [self availability];
         else if (indexPath.row == 1) [self otherVersions];
         else if (indexPath.row == 2) [self performance];
-        else { [df_metadata removeObjectForKey:DFCurrentTrackID()]; self.meta = nil; [self reloadMetadata]; }
+        else { [df_metadata removeObjectForKey:self.trackID]; self.meta = nil; [self reloadMetadata]; }
     } else if (indexPath.section == 2) {
         if (indexPath.row == 0) [self setFilter];
         else { df_filter = @""; [self.tableView reloadData]; DFRefreshVisible(); }
@@ -678,6 +698,13 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 @end
 
+static void DFPresentDashboard(NSString *trackID) {
+    DFDashboardController *page = [[DFDashboardController alloc] initWithTrackID:trackID];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:page];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [DFTopController() presentViewController:nav animated:YES completion:nil];
+}
+
 @interface DFTarget : NSObject
 + (instancetype)shared;
 - (void)openDashboard:(id)sender;
@@ -686,10 +713,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 @implementation DFTarget
 + (instancetype)shared { static DFTarget *x; static dispatch_once_t once; dispatch_once(&once, ^{ x = [DFTarget new]; }); return x; }
 - (void)openDashboard:(id)sender {
-    DFDashboardController *page = [DFDashboardController new];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:page];
-    nav.modalPresentationStyle = UIModalPresentationPageSheet;
-    [DFTopController() presentViewController:nav animated:YES completion:nil];
+    DFPresentDashboard(DFCurrentTrackID());
 }
 @end
 
