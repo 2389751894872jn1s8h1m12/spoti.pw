@@ -2,7 +2,7 @@ name: Compile DistroFind companion
 
 on:
   push:
-    branches: [feat/distrofind-v050-full]
+    branches: [feat/distrofind-v050-full, fix/distrofind-playback-new-rules]
   workflow_dispatch:
 
 env:
