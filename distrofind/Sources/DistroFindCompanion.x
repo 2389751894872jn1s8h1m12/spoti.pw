@@ -17,6 +17,7 @@ static char kDFTrackKey, kDFBadgeKey;
 static NSString *DFCurrentTrackID(void);
 static NSObject *df_playbackLock;
 static NSString *df_lastQueuedTrackID;
+static BOOL df_stateCheckQueued;
 static BOOL df_refreshQueued;
 static NSMutableDictionary<NSString *, NSMutableArray *> *df_pendingLookups;
 static void DFPresentDashboard(NSString *trackID);
@@ -788,27 +789,39 @@ static UIButton *DFBarButton(UIViewController *controller) {
 // The old SPTEsperantoPlayer -state hook called track metadata getters
 // synchronously, and the SPTPlayerTrack -metadata hook could recursively
 // re-enter those getters as soon as playback began. Keep this hook minimal.
+// Do not call a track property getter synchronously from Spotify's
+// frequently-invoked playback state getter. Only enqueue one snapshot.
 %hook SPTEsperantoPlayer
 - (id)state {
     SPTPlayerState *state = %orig;
     SPTPlayerTrack *track = state.track;
-    NSString *trackID = track ? DFTrackIDFromURI(track.URI) : nil;
-    if (!trackID.length) return state;
+    if (!track) return state;
 
-    BOOL changed = NO;
+    BOOL schedule = NO;
     @synchronized(df_playbackLock) {
-        if (![trackID isEqualToString:df_lastQueuedTrackID]) {
-            df_lastQueuedTrackID = [trackID copy];
-            changed = YES;
+        if (!df_stateCheckQueued) {
+            df_stateCheckQueued = YES;
+            schedule = YES;
         }
     }
-    if (changed) {
+    if (schedule) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            df_currentTrack = track;
-            df_currentTrackID = [trackID copy];
-            DFRememberTrack(track);
-            DFResolve(trackID, nil);
-            DFRefreshVisible();
+            NSString *trackID = DFTrackIDFromURI(track.URI);
+            BOOL changed = NO;
+            @synchronized(df_playbackLock) {
+                df_stateCheckQueued = NO;
+                if (trackID.length && ![trackID isEqualToString:df_lastQueuedTrackID]) {
+                    df_lastQueuedTrackID = [trackID copy];
+                    changed = YES;
+                }
+            }
+            if (changed) {
+                df_currentTrack = track;
+                df_currentTrackID = [trackID copy];
+                DFRememberTrack(track);
+                DFResolve(trackID, nil);
+                DFRefreshVisible();
+            }
         });
     }
     return state;
