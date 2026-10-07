@@ -45,14 +45,14 @@ jobs:
           curl -fsSL "${{ inputs.ipa_url }}" -o ipa/spotify.ipa
           case "$(file --mime-type -b ipa/spotify.ipa)" in application/zip|application/x-ios-app) ;; *) echo "::error::Not an IPA"; exit 1 ;; esac
 
-      - name: Build official 0.50 + full DistroFind
-        run: bash scripts/pipeline-v050-distrofind.sh ipa/spotify.ipa
+      - name: Build official 0.50 kit ONLY (diagnostic)
+        run: DISTROFIND_COMPANION=0 bash scripts/pipeline-v050-distrofind.sh ipa/spotify.ipa
 
       - uses: actions/upload-artifact@v5
         if: inputs.upload_method != 'filebin'
         with:
-          name: spoti.pw-0.50.0-distrofind
-          path: out/spoti.pw-0.50.0-distrofind-Spotify-*.ipa
+          name: spoti.pw-0.50.0-kit-only
+          path: out/spoti.pw-0.50.0-kit-only-Spotify-*.ipa
           if-no-files-found: error
 
       - name: Upload to filebin.net
@@ -60,7 +60,7 @@ jobs:
         run: |
           BIN="spotifyglass-${{ github.run_id }}"
           echo "### filebin.net download" >> "$GITHUB_STEP_SUMMARY"
-          for f in out/spoti.pw-0.50.0-distrofind-Spotify-*.ipa; do
+          for f in out/spoti.pw-0.50.0-kit-only-Spotify-*.ipa; do
             curl -fsS -X POST -H "Content-Type: application/octet-stream" --data-binary "@$f" "https://filebin.net/$BIN/$(basename "$f")" >/dev/null
             echo "- https://filebin.net/$BIN/$(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
           done
