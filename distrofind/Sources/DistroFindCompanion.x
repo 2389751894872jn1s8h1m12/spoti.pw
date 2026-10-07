@@ -86,6 +86,13 @@ static void DFRefreshVisible(void) {
                         for (UICollectionViewCell *cell in ((UICollectionView *)view).visibleCells)
                             [cell setNeedsLayout];
                     }
+                    if ([view isKindOfClass:UIButton.class] &&
+                        [view.accessibilityIdentifier isEqualToString:@"DistroFind.NowPlaying.Badge"]) {
+                        UIButton *button = (UIButton *)view;
+                        NSString *name = SGDistroDisplayName(df_metadata[DFCurrentTrackID()]) ?: @"DistroFind…";
+                        if (![[button titleForState:UIControlStateNormal] isEqualToString:name])
+                            [button setTitle:name forState:UIControlStateNormal];
+                    }
                     [stack addObjectsFromArray:view.subviews];
                 }
             }
@@ -769,6 +776,7 @@ static UIButton *DFBarButton(UIViewController *controller) {
         button.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
         button.layer.cornerRadius = 7;
         button.clipsToBounds = YES;
+        button.accessibilityIdentifier = @"DistroFind.NowPlaying.Badge";
         [button addTarget:[DFTarget shared] action:@selector(openDashboard:) forControlEvents:UIControlEventTouchUpInside];
         [controller.view addSubview:button];
         objc_setAssociatedObject(controller, &key, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -821,7 +829,8 @@ static UIButton *DFBarButton(UIViewController *controller) {
     NSString *trackID = DFCurrentTrackID();
     SGDistroMetadata *meta = df_metadata[trackID];
     NSString *name = SGDistroDisplayName(meta) ?: (trackID.length ? @"DistroFind…" : @"DistroFind");
-    [button setTitle:name forState:UIControlStateNormal];
+    if (![[button titleForState:UIControlStateNormal] isEqualToString:name])
+        [button setTitle:name forState:UIControlStateNormal];
     CGFloat width = MIN(116, MAX(64, [name sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}].width + 16));
     CGRect bounds = controller.view.bounds;
     button.frame = CGRectMake(MAX(56, bounds.size.width - width - 52), MAX(2, bounds.size.height - 19), width, 16);
