@@ -23,5 +23,8 @@ jobs:
       - name: Install tools
         run: brew install make dpkg ldid
 
+      - name: Validate 0.50 pipeline
+        run: bash -n scripts/pipeline-v050-distrofind.sh
+
       - name: Build companion
         run: env -u MAKELEVEL gmake -C distrofind clean package
