@@ -19,6 +19,8 @@
 @property (nonatomic, copy) NSString *releaseDate;
 @property (nonatomic, copy) NSString *coverURL;
 @property (nonatomic, copy) NSArray<NSString *> *copyrights;
+@property (nonatomic, copy) NSString *pLine;
+@property (nonatomic, copy) NSString *cLine;
 @property (nonatomic, copy) NSArray<NSString *> *artistIDs;
 @property (nonatomic) NSInteger durationMs;
 @property (nonatomic) NSInteger trackNumber;
