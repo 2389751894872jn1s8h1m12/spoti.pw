@@ -134,6 +134,8 @@ static void DFResolve(NSString *trackID, void (^completion)(SGDistroMetadata *me
         void (^finish)(SGDistroMetadata *, NSError *) = ^(SGDistroMetadata *resolved, NSError *failure) {
             if (resolved) {
                 df_metadata[trackID] = resolved;
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"DistroFind.MetadataReady"
+                    object:trackID];
                 SGLog(@"DistroFind metadata ready for a track");
             } else if (failure) {
                 SGLog(@"DistroFind metadata lookup failed, status %ld", (long)failure.code);
@@ -882,6 +884,16 @@ static UIButton *DFBarButton(UIViewController *controller) {
 // re-enter those getters as soon as playback began. Keep this hook minimal.
 // Do not call a track property getter synchronously from Spotify's
 // frequently-invoked playback state getter. Only enqueue one snapshot.
+// Public bridge used by optional player/artist UI hooks; no player getter hooks here.
+NSString *DFUICurrentTrackID(void) { return DFCurrentTrackID(); }
+NSString *DFUITrackDistributor(NSString *trackID) {
+    return SGDistroDisplayName(df_metadata[trackID]);
+}
+void DFUIRequestDistributor(NSString *trackID) {
+    if (trackID.length) DFResolve(trackID, nil);
+}
+void DFUIOpenTrackInfo(NSString *trackID) { DFPresentDashboard(trackID); }
+
 %hook SPTEsperantoPlayer
 - (id)state {
     SPTPlayerState *state = %orig;
