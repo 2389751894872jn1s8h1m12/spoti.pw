@@ -566,6 +566,8 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 65;
     self.title = @"DistroFind";
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
     [self reloadMetadata];
@@ -585,7 +587,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 4; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 15;
+    if (section == 0) return 16;
     if (section == 1) return 4;
     if (section == 2) return 2;
     return 2;
@@ -613,6 +615,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
         m.licensorUUID ?: @"—",
         m.pLine.length ? m.pLine : @"Not supplied by Spotify",
         m.cLine.length ? m.cLine : @"Not supplied by Spotify",
+        m.copyrights.count ? [m.copyrights componentsJoinedByString:@"\n"] : @"—",
         duration,
         live,
     ];
@@ -632,7 +635,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) {
-        NSArray *names = @[@"Track", @"Artist(s)", @"Distributor", @"Parent", @"Likely sub-distributor", @"Album", @"Label", @"Release date", @"ISRC", @"UPC", @"Licensor UUID", @"℗ line", @"© line", @"Duration", @"Went live"];
+        NSArray *names = @[@"Track", @"Artist(s)", @"Distributor", @"Parent", @"Likely sub-distributor", @"Album", @"Label", @"Release date", @"ISRC", @"UPC", @"Licensor UUID", @"℗ line", @"© line", @"All rights statements", @"Duration", @"Went live"];
         return [self basicCell:tableView title:names[indexPath.row] value:[self infoValues][indexPath.row] action:NO];
     }
     if (indexPath.section == 1) {
