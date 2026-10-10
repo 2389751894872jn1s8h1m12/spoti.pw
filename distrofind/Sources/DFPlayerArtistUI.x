@@ -3,12 +3,20 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
+#import <math.h>
 
 extern NSString *DFUICurrentTrackID(void);
 extern NSString *DFUITrackDistributor(NSString *trackID);
 extern void DFUIRequestDistributor(NSString *trackID);
 extern void DFUIOpenTrackInfo(NSString *trackID);
 extern void DFUIOpenArtistTool(NSString *artistID, BOOL regions);
+
+@class DFPlayerInfoAction;
+@interface DFPlayerInfoAction : NSObject
++ (instancetype)shared;
+- (void)openInfo:(id)sender;
+@end
 
 static char kInfoKey, kChipKey, kArtistActionsKey;
 static NSString *dfMenuArtist;
@@ -149,9 +157,8 @@ static void DFUIAddFooterInfo(UIView *host) {
         button.accessibilityLabel = @"DistroFind Track Info";
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightRegular];
         [button setImage:[UIImage systemImageNamed:@"info.circle" withConfiguration:cfg] forState:UIControlStateNormal];
-        [button addTarget:button action:@selector(df_unusedTap:) forControlEvents:UIControlEventTouchUpInside];
-        // Actual action is installed below via a local target; don't depend on
-        // private Spotify selectors.
+        [button addTarget:[DFPlayerInfoAction shared] action:@selector(openInfo:)
+            forControlEvents:UIControlEventTouchUpInside];
         button.layer.zPosition = 200;
         [host addSubview:button];
         objc_setAssociatedObject(host, &kInfoKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -172,10 +179,6 @@ static void DFUIAddFooterInfo(UIView *host) {
 }
 
 // A one-time action target shared by the player's new Info button.
-@interface DFPlayerInfoAction : NSObject
-+ (instancetype)shared;
-- (void)openInfo:(id)sender;
-@end
 @implementation DFPlayerInfoAction
 + (instancetype)shared {
     static DFPlayerInfoAction *one;
