@@ -248,6 +248,15 @@ static void DFUIArtistMenu(UIViewController *menu) {
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
     if ([NSStringFromClass(controller.class) containsString:@"ContextMenuViewController"]) {
         NSString *artist = DFUIArtistFromPage((UIViewController *)self);
+        if (!artist.length) {
+            // Depending on the host's presentation style, Spotify can ask a
+            // coordinator instead of its actual page to present the menu.
+            for (UIWindow *window in UIApplication.sharedApplication.windows) {
+                if (!window.isKeyWindow) continue;
+                artist = DFUIArtistFromPage(window.rootViewController);
+                if (artist.length) break;
+            }
+        }
         if (artist.length) {
             dfMenuArtist = artist;
             dfMenuRequestedAt = CFAbsoluteTimeGetCurrent();
