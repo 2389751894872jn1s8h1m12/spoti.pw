@@ -268,6 +268,23 @@ static void DFUIArtistMenu(UIViewController *menu) {
     NSLog(@"[distrofind] installed artist scan actions in Spotify context menu");
 }
 
+%hook UIControl
+- (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
+    NSString *identifier = self.accessibilityIdentifier ?: @"";
+    NSString *label = self.accessibilityLabel ?: @"";
+    if ([identifier containsString:@"ContextMenuButton"] ||
+        [identifier containsString:@"PinnedMore"] ||
+        [label isEqualToString:@"More"]) {
+        NSString *artist = DFUIArtistInForeground();
+        if (artist.length) {
+            dfMenuArtist = artist;
+            dfMenuRequestedAt = CFAbsoluteTimeGetCurrent();
+        }
+    }
+    %orig;
+}
+%end
+
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -336,8 +353,8 @@ static char kDFUIRefreshStamp;
     %orig;
     if (!self.window) return;
     NSString *identifier = self.accessibilityIdentifier;
-    BOOL title = [identifier isEqualToString:@"now-playing-title-label"];
-    BOOL queue = [identifier isEqualToString:@"QueueButtonNowPlaying"];
+    BOOL title = [identifier containsString:@"now-playing-title-label"];
+    BOOL queue = [identifier containsString:@"QueueButtonNowPlaying"];
     if (!title && !queue) return;
     __weak UIView *weakView = self;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -352,8 +369,8 @@ static char kDFUIRefreshStamp;
     %orig;
     if (!self.window) return;
     NSString *identifier = self.accessibilityIdentifier;
-    BOOL title = [identifier isEqualToString:@"now-playing-title-label"];
-    BOOL queue = [identifier isEqualToString:@"QueueButtonNowPlaying"];
+    BOOL title = [identifier containsString:@"now-playing-title-label"];
+    BOOL queue = [identifier containsString:@"QueueButtonNowPlaying"];
     if (!title && !queue) return;
     NSNumber *previous = objc_getAssociatedObject(self, &kDFUIRefreshStamp);
     NSTimeInterval now = CACurrentMediaTime();
