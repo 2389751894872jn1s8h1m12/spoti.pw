@@ -18,6 +18,15 @@ extern void DFUIOpenArtistTool(NSString *artistID, BOOL regions);
 - (void)openInfo:(id)sender;
 @end
 
+// The official 0.50 redesign uses this same persisted flag. Do not hook the
+// native/stock player, including on builds where the iOS 26 redesign is absent.
+static BOOL DFRedesignedPlayerEnabled(void) {
+    if (@available(iOS 26.0, *)) {
+        return [NSUserDefaults.standardUserDefaults boolForKey:@"spotifyglass.redesign"];
+    }
+    return NO;
+}
+
 static char kInfoKey, kChipKey, kArtistActionsKey;
 static NSString *dfMenuArtist;
 static NSTimeInterval dfMenuRequestedAt;
@@ -90,9 +99,11 @@ static NSString *DFUIArtistFromPage(UIViewController *controller) {
 }
 - (void)infoPressed { if (self.trackID.length) DFUIOpenTrackInfo(self.trackID); }
 - (void)refresh {
-    NSString *name = DFUITrackDistributor(self.trackID) ?: @"DistroFind…";
+    NSString *name = DFUITrackDistributor(self.trackID);
+    // Never draw a provisional chip over Spotify's real title while loading.
+    self.hidden = !name.length;
     if ([_text.text isEqualToString:name]) return;
-    _text.text = name;
+    _text.text = name ?: @"";
     [_text.layer removeAnimationForKey:@"df.player.marquee"];
     [self setNeedsLayout];
 }
@@ -114,70 +125,107 @@ static NSString *DFUIArtistFromPage(UIViewController *controller) {
 }
 @end
 
+// This must be the InformationElementsUnit *view*, never the nearest
+// 40-point title-label clip. A clip made the original badge paint right over
+// the title and steal its gestures on Spotify 9.1.88.
 static void DFUIInstallTitle(UIView *host) {
-    UIView *title = DFUIFind(host, @"now-playing-title-label", 9);
-    if (!title) return;
+    if (!DFRedesignedPlayerEnabled() || !host || !host.window) return;
+    UIView *title = DFUIFind(host, @"now-playing-title-label", 8);
+    UIView *artist = DFUIFind(host, @"now-playing-subtitle-label", 8);
+    if (!title || !artist || host.bounds.size.width < 250 || host.bounds.size.height < 48) return;
+
     DFInfoChip *chip = objc_getAssociatedObject(host, &kChipKey);
     if (!chip) {
         chip = [DFInfoChip new];
-        chip.accessibilityIdentifier = @"DistroFind.Player.TitleBadge";
+        chip.accessibilityIdentifier = @"DistroFind.Redesigned.Player.Distributor";
+        chip.accessibilityLabel = @"DistroFind track information";
         [host addSubview:chip];
         objc_setAssociatedObject(host, &kChipKey, chip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSLog(@"[distrofind] now-playing title chip attached");
+        NSLog(@"[distrofind] redesigned player artist-line distributor chip created");
     }
-    chip.trackID = DFUICurrentTrackID();
-    if (chip.trackID.length && !DFUITrackDistributor(chip.trackID))
-        DFUIRequestDistributor(chip.trackID);
-    [chip refresh];
+    NSString *trackID = DFUICurrentTrackID();
+    if (![chip.trackID isEqualToString:trackID]) {
+        chip.trackID = trackID;
+        [chip refresh];
+    }
+    if (trackID.length && !DFUITrackDistributor(trackID)) DFUIRequestDistributor(trackID);
 
-    CGRect titleFrame = [title convertRect:title.bounds toView:host];
-    UIFont *font = [title isKindOfClass:UILabel.class] ? ((UILabel *)title).font : [UIFont boldSystemFontOfSize:20];
-    NSString *titleText = [title isKindOfClass:UILabel.class] ? ((UILabel *)title).text : nil;
-    CGFloat titleTextWidth = [titleText sizeWithAttributes:@{NSFontAttributeName:font}].width;
-    CGFloat maxChip = MIN(136, MAX(65, host.bounds.size.width * 0.33));
-    CGFloat idealX = CGRectGetMinX(titleFrame) + MIN(titleTextWidth, titleFrame.size.width) + 8;
-    CGFloat cap = host.bounds.size.width - maxChip - 10;
-    // Don't cover the title if it is long: drop beside the artist line instead.
-    CGFloat x = idealX <= cap ? idealX : MAX(CGRectGetMinX(titleFrame), cap);
-    CGFloat y = idealX <= cap ? CGRectGetMidY(titleFrame) - 10 : CGRectGetMaxY(titleFrame) + 2;
-    CGRect frame = CGRectMake(x, y, maxChip, 20);
+    // The redesign's info unit is just 64 points high: title on top, artist
+    // below. Place the chip *after the artist*, not on the long/marquee title.
+    CGRect artistBounds = [artist convertRect:artist.bounds toView:host];
+    UILabel *artistLabel = nil;
+    if ([artist isKindOfClass:UILabel.class]) artistLabel = (UILabel *)artist;
+    else {
+        for (UIView *child in artist.subviews) {
+            if ([child isKindOfClass:UILabel.class]) {
+                artistLabel = (UILabel *)child;
+                break;
+            }
+        }
+    }
+    CGFloat artistWidth = artistBounds.size.width;
+    if (artistLabel.text.length) {
+        UIFont *font = artistLabel.font ?: [UIFont systemFontOfSize:14];
+        artistWidth = MIN(artistBounds.size.width,
+                          ceil([artistLabel.text sizeWithAttributes:@{NSFontAttributeName:font}].width));
+    } else if (artistBounds.size.width > 0) {
+        // A clipped marquee might not expose a UILabel at all. Don't put the
+        // distributor on top of a name whose real width we cannot measure.
+        chip.hidden = YES;
+        return;
+    }
+    CGFloat x = CGRectGetMinX(artistBounds) + artistWidth + 11;
+    CGFloat reserveForSave = 75;  // Spotify's green save/check button
+    CGFloat right = MIN(host.bounds.size.width - reserveForSave,
+                        CGRectGetMaxX(artistBounds) - 2);
+    CGFloat available = right - x;
+    if (available < 58 || artistBounds.size.height < 12) {
+        chip.hidden = YES;
+        return;
+    }
+    CGFloat width = MIN(118, available);
+    CGRect frame = CGRectMake(round(x), round(CGRectGetMidY(artistBounds) - 10), round(width), 20);
     if (!CGRectEqualToRect(chip.frame, frame)) chip.frame = frame;
+    chip.hidden = !DFUITrackDistributor(trackID).length;
+    if (chip.superview == host) [host bringSubviewToFront:chip];
 }
 
-static UIView *DFUIArrangedHolder(UIView *child, UIView *host) {
-    for (UIView *view = child; view && view != host; view = view.superview)
-        if ([view.superview isKindOfClass:UIStackView.class]) return view;
-    return nil;
-}
+// The *redesigned* spoti.pw footer already places Lyrics/Devices/Queue at
+// 20/50/80% of its width and lowers the entire row. Do not re-transform queue:
+// applying translations twice was unstable and could hide the fourth button.
 static void DFUIAddFooterInfo(UIView *host) {
-    if (host.bounds.size.width < 180) return;
+    if (!DFRedesignedPlayerEnabled() || !host || !host.window ||
+        host.bounds.size.width < 250 || host.bounds.size.height < 35) return;
+    UIView *queue = DFUIFind(host, @"QueueButtonNowPlaying", 9);
+    if (!queue) return; // A different player, not the redesigned three-icon row.
+
     UIButton *button = objc_getAssociatedObject(host, &kInfoKey);
     if (!button) {
         button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.tintColor = UIColor.whiteColor;
         button.accessibilityLabel = @"DistroFind Track Info";
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightRegular];
-        [button setImage:[UIImage systemImageNamed:@"info.circle" withConfiguration:cfg] forState:UIControlStateNormal];
+        button.accessibilityIdentifier = @"DistroFind.Redesigned.Player.InfoButton";
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
+            configurationWithPointSize:22 weight:UIImageSymbolWeightRegular];
+        [button setImage:[UIImage systemImageNamed:@"info.circle" withConfiguration:cfg]
+                forState:UIControlStateNormal];
         [button addTarget:[DFPlayerInfoAction shared] action:@selector(openInfo:)
             forControlEvents:UIControlEventTouchUpInside];
         button.layer.zPosition = 200;
         [host addSubview:button];
         objc_setAssociatedObject(host, &kInfoKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSLog(@"[distrofind] fourth player Info button attached");
+        NSLog(@"[distrofind] redesigned player fourth Info button attached");
     }
-    CGFloat w = host.bounds.size.width;
-    CGFloat h = host.bounds.size.height;
-    CGRect frame = CGRectMake(round(w * 0.91 - 22), round((h - 44) / 2), 44, 44);
+    // To the RIGHT of queue (at 80% width), within the host's real bounds.
+    // The original 3 redesigned controls do not move.
+    CGFloat width = host.bounds.size.width, height = host.bounds.size.height;
+    CGRect frame = CGRectMake(round(width - 45), round((height - 42) / 2), 42, 42);
     if (!CGRectEqualToRect(button.frame, frame)) button.frame = frame;
-
-    UIView *queue = DFUIFind(host, @"QueueButtonNowPlaying", 9);
-    UIView *holder = DFUIArrangedHolder(queue, host);
-    if (holder && queue) {
-        CGFloat current = [queue convertPoint:CGPointMake(CGRectGetMidX(queue.bounds), CGRectGetMidY(queue.bounds)) toView:host].x;
-        CGFloat delta = round(w * 0.73 - current);
-        if (fabs(delta) > 1 && fabs(delta) < w / 2)
-            holder.transform = CGAffineTransformTranslate(holder.transform, delta, 0);
-    }
+    button.hidden = NO;
+    button.alpha = 1;
+    button.userInteractionEnabled = YES;
+    if (button.superview != host) [host addSubview:button];
+    [host bringSubviewToFront:button];
 }
 
 // A one-time action target shared by the player's new Info button.
@@ -340,10 +388,13 @@ static void DFUIArtistMenu(UIViewController *menu) {
 }
 %end
 
-static UIView *DFUIHostOf(UIView *view) {
-    for (UIView *v = view.superview; v; v = v.superview) {
-        CGFloat width = v.bounds.size.width, height = v.bounds.size.height;
-        if (width >= 250 && height >= 40 && height <= 150) return v;
+static UIView *DFUIHostOf(UIView *view, NSString *unit) {
+    for (UIView *v = view; v; v = v.superview) {
+        UIResponder *responder = v.nextResponder;
+        if (![responder isKindOfClass:UIViewController.class]) continue;
+        UIViewController *controller = (UIViewController *)responder;
+        if (controller.viewIfLoaded != v) continue;
+        if ([NSStringFromClass(controller.class) containsString:unit]) return v;
     }
     return nil;
 }
@@ -361,7 +412,7 @@ static char kDFUIRefreshStamp;
     __weak UIView *weakView = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *anchor = weakView;
-        UIView *host = DFUIHostOf(anchor);
+        UIView *host = DFUIHostOf(anchor, title ? @"InformationElementsUnit" : @"FooterElementsUnit");
         if (!host) return;
         if (title) DFUIInstallTitle(host);
         else DFUIAddFooterInfo(host);
@@ -382,7 +433,7 @@ static char kDFUIRefreshStamp;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *anchor = weakView;
         if (!anchor.window) return;
-        UIView *host = DFUIHostOf(anchor);
+        UIView *host = DFUIHostOf(anchor, title ? @"InformationElementsUnit" : @"FooterElementsUnit");
         if (!host) return;
         if (title) DFUIInstallTitle(host);
         else DFUIAddFooterInfo(host);
@@ -391,6 +442,10 @@ static char kDFUIRefreshStamp;
 %end
 
 %ctor {
+    if (!DFRedesignedPlayerEnabled()) {
+        NSLog(@"[distrofind] native Spotify look: redesigned player controls are disabled");
+        return;
+    }
     %init;
-    NSLog(@"[distrofind] player/info and artist menu hooks installed");
+    NSLog(@"[distrofind] redesigned-only player/info and artist menu hooks installed");
 }
