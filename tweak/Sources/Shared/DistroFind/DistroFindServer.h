@@ -15,3 +15,7 @@ void SGDistroPerformanceImageForTrack(NSString *trackID, void (^completion)(UIIm
 void SGDistroOtherVersionsForTrack(NSString *trackID, void (^completion)(NSDictionary *result, NSError *error));
 void SGDistroVydiaSubDistributor(NSString *albumID, NSString *albumName, NSString *artistName,
                                  void (^completion)(NSString *subDistributor));
+
+// New desktop DistroFind endpoint: historical daily streams and trend stats.
+void SGDistroPerformanceDataForTrack(NSString *trackID,
+    void (^completion)(NSDictionary *result, NSError *error));
