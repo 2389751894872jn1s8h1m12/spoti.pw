@@ -227,24 +227,55 @@ static void DFUIAddFooterInfo(UIView *host) {
 }
 @end
 
+static NSString *DFUIArtistInForeground(void) {
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        if (!window.isKeyWindow) continue;
+        NSString *artistID = DFUIArtistFromPage(window.rootViewController);
+        if (artistID.length) return artistID;
+    }
+    return nil;
+}
+
 static void DFUIArtistMenu(UIViewController *menu) {
-    if (!dfMenuArtist.length || CFAbsoluteTimeGetCurrent() - dfMenuRequestedAt > 8) return;
+    NSString *artist = dfMenuArtist;
+    if (!artist.length || CFAbsoluteTimeGetCurrent() - dfMenuRequestedAt > 8)
+        artist = DFUIArtistInForeground();
+    if (!artist.length) return;
     UITableView *table = DFUITable(menu.viewIfLoaded, 9);
     if (!table || table.bounds.size.width < 100) return;
     DFArtistExtraActions *extra = objc_getAssociatedObject(menu, &kArtistActionsKey);
-    if (!extra) {
-        BOOL freeFooter = !table.tableFooterView || table.tableFooterView.bounds.size.height < 1;
-        BOOL freeHeader = !table.tableHeaderView || table.tableHeaderView.bounds.size.height < 1;
-        if (!freeFooter && !freeHeader) return;
-        extra = [[DFArtistExtraActions alloc] initWithFrame:CGRectMake(0, 0, table.bounds.size.width, 104)];
-        extra.artistID = dfMenuArtist;
-        objc_setAssociatedObject(menu, &kArtistActionsKey, extra, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (freeFooter) table.tableFooterView = extra;
-        else table.tableHeaderView = extra;
+    if (extra) { extra.artistID = artist; return; }
+
+    UIView *oldFooter = table.tableFooterView;
+    CGFloat oldHeight = oldFooter && oldFooter.bounds.size.height > 1 ? oldFooter.bounds.size.height : 0;
+    extra = [[DFArtistExtraActions alloc] initWithFrame:CGRectMake(0, oldHeight, table.bounds.size.width, 104)];
+    extra.artistID = artist;
+    objc_setAssociatedObject(menu, &kArtistActionsKey, extra, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Preserve Spotify's pre-existing footer. Both header AND footer can
+    // be occupied on 9.1.88, which made the previous code silently give up.
+    if (oldHeight > 0) {
+        UIView *wrapper = [[UIView alloc] initWithFrame:CGRectMake(0, 0, table.bounds.size.width, oldHeight + 104)];
+        table.tableFooterView = nil;
+        [oldFooter removeFromSuperview];
+        oldFooter.frame = CGRectMake(0, 0, table.bounds.size.width, oldHeight);
+        [wrapper addSubview:oldFooter];
+        [wrapper addSubview:extra];
+        table.tableFooterView = wrapper;
+    } else {
+        table.tableFooterView = extra;
     }
+    [table invalidateIntrinsicContentSize];
+    NSLog(@"[distrofind] installed artist scan actions in Spotify context menu");
 }
 
 %hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    NSString *name = NSStringFromClass([self class]);
+    if ([name containsString:@"ContextMenu"] && [name containsString:@"ViewController"]) {
+        DFUIArtistMenu((UIViewController *)self);
+    }
+}
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
     if ([NSStringFromClass(controller.class) containsString:@"ContextMenuViewController"]) {
         NSString *artist = DFUIArtistFromPage((UIViewController *)self);
@@ -290,6 +321,57 @@ static void DFUIArtistMenu(UIViewController *menu) {
 }
 %end
 
+static UIView *DFUIHostOf(UIView *view) {
+    for (UIView *v = view.superview; v; v = v.superview) {
+        CGFloat width = v.bounds.size.width, height = v.bounds.size.height;
+        if (width >= 250 && height >= 40 && height <= 150) return v;
+    }
+    return nil;
+}
+static char kDFUIRefreshStamp;
+// Observe only the exact player control identifiers rather than relying
+// exclusively on Swift module class names from a different Spotify version.
+%hook UIView
+- (void)didMoveToWindow {
+    %orig;
+    if (!self.window) return;
+    NSString *identifier = self.accessibilityIdentifier;
+    BOOL title = [identifier isEqualToString:@"now-playing-title-label"];
+    BOOL queue = [identifier isEqualToString:@"QueueButtonNowPlaying"];
+    if (!title && !queue) return;
+    __weak UIView *weakView = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *anchor = weakView;
+        UIView *host = DFUIHostOf(anchor);
+        if (!host) return;
+        if (title) DFUIInstallTitle(host);
+        else DFUIAddFooterInfo(host);
+    });
+}
+- (void)layoutSubviews {
+    %orig;
+    if (!self.window) return;
+    NSString *identifier = self.accessibilityIdentifier;
+    BOOL title = [identifier isEqualToString:@"now-playing-title-label"];
+    BOOL queue = [identifier isEqualToString:@"QueueButtonNowPlaying"];
+    if (!title && !queue) return;
+    NSNumber *previous = objc_getAssociatedObject(self, &kDFUIRefreshStamp);
+    NSTimeInterval now = CACurrentMediaTime();
+    if (now - previous.doubleValue < 0.6) return;
+    objc_setAssociatedObject(self, &kDFUIRefreshStamp, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *weakView = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *anchor = weakView;
+        if (!anchor.window) return;
+        UIView *host = DFUIHostOf(anchor);
+        if (!host) return;
+        if (title) DFUIInstallTitle(host);
+        else DFUIAddFooterInfo(host);
+    });
+}
+%end
+
 %ctor {
     %init;
+    NSLog(@"[distrofind] player/info and artist menu hooks installed");
 }
