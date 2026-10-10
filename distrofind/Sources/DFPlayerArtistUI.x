@@ -123,6 +123,7 @@ static void DFUIInstallTitle(UIView *host) {
         chip.accessibilityIdentifier = @"DistroFind.Player.TitleBadge";
         [host addSubview:chip];
         objc_setAssociatedObject(host, &kChipKey, chip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSLog(@"[distrofind] now-playing title chip attached");
     }
     chip.trackID = DFUICurrentTrackID();
     if (chip.trackID.length && !DFUITrackDistributor(chip.trackID))
@@ -162,6 +163,7 @@ static void DFUIAddFooterInfo(UIView *host) {
         button.layer.zPosition = 200;
         [host addSubview:button];
         objc_setAssociatedObject(host, &kInfoKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSLog(@"[distrofind] fourth player Info button attached");
     }
     CGFloat w = host.bounds.size.width;
     CGFloat h = host.bounds.size.height;
