@@ -66,6 +66,16 @@ static NSURL *sourceURL(NSString *uri, NSInteger offset) {
                        [NSURLQueryItem queryItemWithName:@"limit" value:[NSString stringWithFormat:@"%ld",(long)limit]]];
     return parts.URL;
 }
+static NSInteger visibleSourceOffset(UIView *cell, NSString *uri) {
+    NSInteger limit = [uri hasPrefix:@"spotify:playlist:"] ? 100 : 50;
+    for (UIView *view = cell; view; view = view.superview) {
+        if (![view isKindOfClass:UICollectionView.class]) continue;
+        NSIndexPath *path = [(UICollectionView *)view indexPathForCell:(UICollectionViewCell *)cell];
+        if (path) return MAX(0, (path.item / limit) * limit);
+        break;
+    }
+    return 0;
+}
 static NSString *artists(NSDictionary *item) {
     NSMutableArray *names=[NSMutableArray array];
     for (NSDictionary *a in [item[@"artists"] isKindOfClass:NSArray.class]?item[@"artists"]:@[])
@@ -122,8 +132,15 @@ static void fetchPage(NSString *uri) {
             }
             NSInteger limit=[uri hasPrefix:@"spotify:playlist:"]?100:50;
             NSInteger next=offset+limit;
+            [page[@"visited"] addObject:@(offset)];
             page[@"offset"]=@(next);
             BOOL done=!json || items.count<limit || next>=200 || (json[@"total"] && next>=[json[@"total"] integerValue]);
+            NSNumber *jump=page[@"requestedOffset"];
+            if (json && jump && ![page[@"visited"] containsObject:jump]) {
+                page[@"offset"]=jump;
+                done=NO;
+            }
+            [page removeObjectForKey:@"requestedOffset"];
             page[@"done"]=@(done);
             if (!json) NSLog(@"[distrofind] exact row API unavailable (HTTP %ld); no approximate badges",(long)http.statusCode);
             finish(page);
@@ -147,12 +164,24 @@ void DFRowResolveTrack(NSString *title, NSString *artist, UIView *cell, void (^c
     NSMutableDictionary *page=pages[uri];
     if (!page) {
         page=[@{@"offset":@0,@"busy":@NO,@"done":@NO,
-                @"index":[NSMutableDictionary dictionary],@"pending":[NSMutableDictionary dictionary]} mutableCopy];
+                @"index":[NSMutableDictionary dictionary],@"pending":[NSMutableDictionary dictionary],
+                @"visited":[NSMutableSet set]} mutableCopy];
         pages[uri]=page;
     }
     NSString *key=keyFor(title,artist);
     NSSet *ids=page[@"index"][key];
-    if (ids.count>1 || (ids.count && [page[@"done"] boolValue])) { completion(ids.count==1?ids.anyObject:nil); return; }
+    NSInteger targetOffset=visibleSourceOffset(cell,uri);
+    BOOL wasVisited=[page[@"visited"] containsObject:@(targetOffset)];
+    if (targetOffset>=200 && !wasVisited && !ids.count) {
+        if ([page[@"busy"] boolValue]) page[@"requestedOffset"]=@(targetOffset);
+        else {
+            page[@"offset"]=@(targetOffset);
+            page[@"done"]=@NO;
+        }
+    }
+    if (ids.count>1 || (ids.count && ([page[@"done"] boolValue] || wasVisited))) {
+        completion(ids.count==1?ids.anyObject:nil); return;
+    }
     if ([page[@"done"] boolValue]) { completion(nil); return; }
     NSMutableArray *callbacks=page[@"pending"][key];
     if (!callbacks) page[@"pending"][key]=callbacks=[NSMutableArray array];
