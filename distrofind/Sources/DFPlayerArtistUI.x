@@ -176,18 +176,51 @@ static void DFUIInstallTitle(UIView *host) {
         chip.hidden = YES;
         return;
     }
-    CGFloat x = CGRectGetMinX(artistBounds) + artistWidth + 11;
-    CGFloat reserveForSave = 75;  // Spotify's green save/check button
-    CGFloat right = MIN(host.bounds.size.width - reserveForSave,
-                        CGRectGetMaxX(artistBounds) - 2);
-    CGFloat available = right - x;
-    if (available < 58 || artistBounds.size.height < 12) {
+    CGFloat reserveForSave = 75;  // Spotify's green save/check button.
+    CGFloat chipWidth = 118, x = 0, y = 0;
+    BOOL positionValid = NO;
+
+    // Prefer next to the title when its true rendered text fits. Measuring
+    // only the title CLIP'S frame previously caused the overlapping pill.
+    UILabel *titleLabel = nil;
+    if ([title isKindOfClass:UILabel.class]) titleLabel = (UILabel *)title;
+    else for (UIView *child in title.subviews) {
+        if ([child isKindOfClass:UILabel.class]) { titleLabel = (UILabel *)child; break; }
+    }
+    if (titleLabel.text.length) {
+        CGRect titleBounds = [title convertRect:title.bounds toView:host];
+        CGFloat rendered = ceil([titleLabel.text sizeWithAttributes:@{
+            NSFontAttributeName:titleLabel.font ?: [UIFont boldSystemFontOfSize:20]
+        }].width);
+        CGFloat candidate = CGRectGetMinX(titleBounds) + rendered + 10;
+        CGFloat right = MIN(host.bounds.size.width - reserveForSave,
+                            CGRectGetMaxX(titleBounds) - 2);
+        if (candidate + 58 <= right) {
+            x = candidate;
+            y = CGRectGetMidY(titleBounds) - 10;
+            chipWidth = MIN(118, right - candidate);
+            positionValid = YES;
+        }
+    }
+    // A long or animated title may consume its entire clip; then put the
+    // chip after the artist name in the second line. Never overlap either.
+    if (!positionValid) {
+        CGFloat candidate = CGRectGetMinX(artistBounds) + artistWidth + 11;
+        CGFloat right = MIN(host.bounds.size.width - reserveForSave,
+                            CGRectGetMaxX(artistBounds) - 2);
+        if (candidate + 58 <= right && artistBounds.size.height >= 12) {
+            x = candidate;
+            y = CGRectGetMidY(artistBounds) - 10;
+            chipWidth = MIN(118, right - candidate);
+            positionValid = YES;
+        }
+    }
+    if (!positionValid) {
         chip.layoutAllowed = NO;
         chip.hidden = YES;
         return;
     }
-    CGFloat width = MIN(118, available);
-    CGRect frame = CGRectMake(round(x), round(CGRectGetMidY(artistBounds) - 10), round(width), 20);
+    CGRect frame = CGRectMake(round(x), round(MAX(0, y)), round(chipWidth), 20);
     if (!CGRectEqualToRect(chip.frame, frame)) chip.frame = frame;
     chip.layoutAllowed = YES;
     chip.hidden = ![DFUITrackDistributor(trackID) length];
