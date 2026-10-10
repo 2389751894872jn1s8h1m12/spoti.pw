@@ -1,119 +1,152 @@
-// Resolve visible Spotify track rows without touching the playback getter or
-// reflecting over Swift object ivars. Cache searches and rate limit requests.
-#import <Foundation/Foundation.h>
+// Source-aware track identification. Never Spotify-search a displayed title:
+// different releases of the same recording can have different licensors.
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 #import "Shared/Spotify/Spclient.h"
 
-typedef void (^DFRowCompletion)(NSString *trackID);
-
-static NSMutableDictionary<NSString *, NSMutableArray<DFRowCompletion> *> *dfRowWaiting;
-static NSMutableDictionary<NSString *, id> *dfRowCache;
-static NSMutableArray<NSString *> *dfRowQueue;
-static NSSet *dfRowFailures;
-static NSInteger dfRowInFlight;
-
-static NSString *dfRowClean(NSString *s) {
-    if (![s isKindOfClass:NSString.class]) return @"";
-    return [[s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+static NSMutableDictionary<NSString *, NSMutableDictionary *> *pages;
+static NSString *str(id s) { return [s isKindOfClass:NSString.class] ? s : [s isKindOfClass:NSURL.class] ? [s absoluteString] : nil; }
+static NSString *idFromURI(NSString *uri) {
+    NSRange r = [uri rangeOfString:@"spotify:track:"];
+    if (r.location == NSNotFound || uri.length < NSMaxRange(r)+22) return nil;
+    NSString *v = [uri substringWithRange:NSMakeRange(NSMaxRange(r),22)];
+    NSCharacterSet *illegal = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"] invertedSet];
+    return [v rangeOfCharacterFromSet:illegal].location == NSNotFound ? v : nil;
 }
-static NSString *dfRowKey(NSString *title, NSString *artist) {
-    return [NSString stringWithFormat:@"%@\n%@", dfRowClean(title), dfRowClean(artist)];
+static NSString *norm(NSString *s) {
+    return [str(s) ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].lowercaseString;
 }
-static BOOL dfRowArtistMatches(NSString *wanted, NSArray *artists) {
-    NSString *needle = dfRowClean(wanted);
-    if (!needle.length) return YES;
-    for (NSDictionary *a in artists) {
-        NSString *name = dfRowClean(a[@"name"]);
-        if (name.length && ([needle isEqualToString:name] || [needle containsString:name] || [name containsString:needle]))
-            return YES;
+static NSString *keyFor(NSString *title, NSString *artist) {
+    return [NSString stringWithFormat:@"%@|%@",norm(title),norm(artist)];
+}
+static NSString *directURI(UIView *cell) {
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:cell];
+    NSUInteger visited=0;
+    while (queue.count && visited++ < 48) {
+        UIView *v=queue.firstObject; [queue removeObjectAtIndex:0];
+        NSString *a=idFromURI(v.accessibilityIdentifier), *b=idFromURI(v.accessibilityValue);
+        if (a||b) return a?:b;
+        for (NSString *selectorName in @[@"URI",@"uri",@"spotifyURI",@"trackURI"]) {
+            SEL sel=NSSelectorFromString(selectorName);
+            Method m=class_getInstanceMethod(v.class,sel);
+            if (!m || method_getNumberOfArguments(m)!=2) continue;
+            char type[8]={0}; method_getReturnType(m,type,sizeof(type));
+            if (type[0]!='@') continue;
+            @try { NSString *track=idFromURI(str(((id(*)(id,SEL))objc_msgSend)(v,sel))); if (track) return track; }
+            @catch (__unused NSException *e) {}
+        }
+        [queue addObjectsFromArray:v.subviews];
     }
-    return NO;
+    return nil;
 }
-static void dfRowPump(void);
-static void dfRowFinish(NSString *key, NSString *trackID) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        dfRowCache[key] = trackID ?: NSNull.null;
-        NSArray *callbacks = [dfRowWaiting[key] copy];
-        [dfRowWaiting removeObjectForKey:key];
-        dfRowInFlight = MAX(0, dfRowInFlight - 1);
-        for (DFRowCompletion callback in callbacks) callback(trackID);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 180 * NSEC_PER_MSEC),
-                       dispatch_get_main_queue(), ^{ dfRowPump(); });
-    });
+static NSString *pageURI(UIView *cell) {
+    for (UIResponder *r=cell; r; r=r.nextResponder) {
+        if (![r isKindOfClass:UIViewController.class] || ![r respondsToSelector:@selector(spt_pageURI)]) continue;
+        @try { NSString *uri=str(((id(*)(id,SEL))objc_msgSend)(r,@selector(spt_pageURI))); if (uri.length) return uri; }
+        @catch (__unused NSException *e) {}
+    }
+    return nil;
 }
-static void dfRowQuery(NSString *key) {
-    NSArray *parts = [key componentsSeparatedByString:@"\n"];
-    NSString *title = parts.firstObject ?: @"";
-    NSString *artist = parts.count > 1 ? parts[1] : @"";
-    NSURLComponents *url = [NSURLComponents componentsWithString:@"https://api.spotify.com/v1/search"];
-    NSString *query = artist.length
-        ? [NSString stringWithFormat:@"track:%@ artist:%@", title, artist]
-        : [NSString stringWithFormat:@"track:%@", title];
-    url.queryItems = @[
-        [NSURLQueryItem queryItemWithName:@"q" value:query],
-        [NSURLQueryItem queryItemWithName:@"type" value:@"track"],
-        [NSURLQueryItem queryItemWithName:@"limit" value:@"8"]
-    ];
-    NSMutableURLRequest *request = SGSpclientRequest(url.URL);
+static NSURL *sourceURL(NSString *uri, NSInteger offset) {
+    NSString *base=nil;
+    NSInteger limit=50;
+    if ([uri hasPrefix:@"spotify:playlist:"] && uri.length==39) {
+        base=[@"https://api.spotify.com/v1/playlists/" stringByAppendingFormat:@"%@/tracks",[uri substringFromIndex:17]];
+        limit=100;
+    } else if ([uri hasPrefix:@"spotify:album:"] && uri.length==36) {
+        base=[@"https://api.spotify.com/v1/albums/" stringByAppendingFormat:@"%@/tracks",[uri substringFromIndex:14]];
+    } else if ([uri isEqualToString:@"spotify:collection:tracks"]) {
+        base=@"https://api.spotify.com/v1/me/tracks";
+    }
+    if (!base) return nil;
+    NSURLComponents *parts=[NSURLComponents componentsWithString:base];
+    parts.queryItems=@[[NSURLQueryItem queryItemWithName:@"offset" value:[NSString stringWithFormat:@"%ld",(long)offset]],
+                       [NSURLQueryItem queryItemWithName:@"limit" value:[NSString stringWithFormat:@"%ld",(long)limit]]];
+    return parts.URL;
+}
+static NSString *artists(NSDictionary *item) {
+    NSMutableArray *names=[NSMutableArray array];
+    for (NSDictionary *a in [item[@"artists"] isKindOfClass:NSArray.class]?item[@"artists"]:@[])
+        if (str(a[@"name"])) [names addObject:a[@"name"]];
+    return [names componentsJoinedByString:@", "];
+}
+static void finish(NSMutableDictionary *page) {
+    NSDictionary *index=page[@"index"];
+    NSMutableDictionary *pending=page[@"pending"];
+    for (NSString *k in [pending.allKeys copy]) {
+        NSSet *ids=index[k];
+        if (!ids.count && ![page[@"done"] boolValue]) continue;
+        NSArray *callbacks=[pending[k] copy]; [pending removeObjectForKey:k];
+        NSString *answer=ids.count==1?ids.anyObject:nil;
+        for (void (^cb)(NSString *) in callbacks) cb(answer);
+    }
+}
+static void fetchPage(NSString *uri) {
+    NSMutableDictionary *page=pages[uri];
+    if (!page || [page[@"busy"] boolValue] || [page[@"done"] boolValue]) return;
+    NSInteger offset=[page[@"offset"] integerValue];
+    NSURL *url=sourceURL(uri,offset);
+    if (!url) return;
+    NSMutableURLRequest *request=SGSpclientRequest(url);
     if (!request) {
-        // Auth is captured after Spotify signs in, without ever logging credentials.
-        SGSpclientWhenReady(^{ dispatch_async(dispatch_get_main_queue(), ^{ dfRowQuery(key); }); });
+        SGSpclientWhenReady(^{ fetchPage(uri); });
         return;
     }
-    request.timeoutInterval = 12;
-    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSString *found = nil;
-        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
-            ? ((NSHTTPURLResponse *)response).statusCode : 0;
-        if (!error && status == 200 && data.length) {
-            NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            NSArray *items = [payload[@"tracks"][@"items"] isKindOfClass:NSArray.class] ? payload[@"tracks"][@"items"] : @[];
-            NSMutableSet<NSString *> *matches = [NSMutableSet set];
-            for (NSDictionary *track in items) {
-                NSString *candidate = track[@"id"];
-                if (![candidate isKindOfClass:NSString.class] || candidate.length != 22) continue;
-                if (![dfRowClean(track[@"name"]) isEqualToString:title]) continue;
-                if (!dfRowArtistMatches(artist, track[@"artists"])) continue;
-                [matches addObject:candidate];
+    // Web API only needs Authorization, not the spclient-specific routing headers.
+    for (NSString *header in @[@"client-token",@"app-platform",@"spotify-app-version"])
+        [request setValue:nil forHTTPHeaderField:header];
+    request.timeoutInterval=12;
+    page[@"busy"]=@YES;
+    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error) {
+        NSHTTPURLResponse *http=[response isKindOfClass:NSHTTPURLResponse.class]?(id)response:nil;
+        id obj=(!error && http.statusCode==200 && data.length)
+            ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+        NSDictionary *json=[obj isKindOfClass:NSDictionary.class]?obj:nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            page[@"busy"]=@NO;
+            NSArray *items=[json[@"items"] isKindOfClass:NSArray.class]?json[@"items"]:@[];
+            NSMutableDictionary *index=page[@"index"];
+            for (NSDictionary *wrapper in items) {
+                NSDictionary *track=[wrapper[@"track"] isKindOfClass:NSDictionary.class]?wrapper[@"track"]:wrapper;
+                NSString *sid=str(track[@"id"]);
+                if (sid.length!=22) sid=idFromURI(str(track[@"uri"]));
+                if (!sid.length || !str(track[@"name"]).length) continue;
+                NSString *k=keyFor(track[@"name"],artists(track));
+                NSMutableSet *ids=index[k];
+                if (!ids) index[k]=ids=[NSMutableSet set];
+                [ids addObject:sid];
             }
-            // A duplicate title with multiple Spotify IDs is ambiguous. Don't
-            // silently badge the wrong master/release/version.
-            if (matches.count == 1) found = matches.anyObject;
-        }
-        dfRowFinish(key, found);
+            NSInteger limit=[uri hasPrefix:@"spotify:playlist:"]?100:50;
+            NSInteger next=offset+limit;
+            page[@"offset"]=@(next);
+            BOOL done=!json || items.count<limit || next>=200 || (json[@"total"] && next>=[json[@"total"] integerValue]);
+            page[@"done"]=@(done);
+            if (!json) NSLog(@"[distrofind] exact row API unavailable (HTTP %ld); no approximate badges",(long)http.statusCode);
+            finish(page);
+            if (!done && [page[@"pending"] count]) fetchPage(uri);
+        });
     }] resume];
 }
-static void dfRowPump(void) {
-    if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ dfRowPump(); }); return; }
-    while (dfRowInFlight < 2 && dfRowQueue.count) {
-        NSString *key = dfRowQueue.firstObject;
-        [dfRowQueue removeObjectAtIndex:0];
-        dfRowInFlight++;
-        dfRowQuery(key);
+void DFRowResolveTrack(NSString *title, NSString *artist, UIView *cell, void (^completion)(NSString *trackID)) {
+    if (!NSThread.isMainThread || !completion || !cell || !title.length) return;
+    NSString *sid=directURI(cell);
+    if (sid) { completion(sid); return; }
+    NSString *uri=pageURI(cell);
+    if (!sourceURL(uri,0)) { completion(nil); return; }
+    NSMutableDictionary *page=pages[uri];
+    if (!page) {
+        page=[@{@"offset":@0,@"busy":@NO,@"done":@NO,
+                @"index":[NSMutableDictionary dictionary],@"pending":[NSMutableDictionary dictionary]} mutableCopy];
+        pages[uri]=page;
     }
+    NSString *key=keyFor(title,artist);
+    NSSet *ids=page[@"index"][key];
+    if (ids.count>1 || (ids.count && [page[@"done"] boolValue])) { completion(ids.count==1?ids.anyObject:nil); return; }
+    if ([page[@"done"] boolValue]) { completion(nil); return; }
+    NSMutableArray *callbacks=page[@"pending"][key];
+    if (!callbacks) page[@"pending"][key]=callbacks=[NSMutableArray array];
+    if (callbacks.count<6) [callbacks addObject:[completion copy]];
+    fetchPage(uri);
 }
-
-// Called only for cells close to the collection view's visible rectangle.
-// Completion is always on the main thread. A nil ID leaves the row unbadged.
-void DFRowResolveTrack(NSString *title, NSString *artist, DFRowCompletion completion) {
-    if (!NSThread.isMainThread) {
-        dispatch_async(dispatch_get_main_queue(), ^{ DFRowResolveTrack(title, artist, completion); });
-        return;
-    }
-    if (!title.length || !completion) return;
-    NSString *key = dfRowKey(title, artist);
-    id cached = dfRowCache[key];
-    if (cached) { completion(cached == NSNull.null ? nil : cached); return; }
-    NSMutableArray *pending = dfRowWaiting[key];
-    if (pending) { [pending addObject:[completion copy]]; return; }
-    if (dfRowQueue.count > 60) { completion(nil); return; }
-    dfRowWaiting[key] = [NSMutableArray arrayWithObject:[completion copy]];
-    [dfRowQueue addObject:key];
-    dfRowPump();
-}
-
-__attribute__((constructor))
-static void DFRowInit(void) {
-    dfRowWaiting = [NSMutableDictionary dictionary];
-    dfRowCache = [NSMutableDictionary dictionary];
-    dfRowQueue = [NSMutableArray array];
-}
+__attribute__((constructor)) static void DFRowInit(void) { pages=[NSMutableDictionary dictionary]; }
