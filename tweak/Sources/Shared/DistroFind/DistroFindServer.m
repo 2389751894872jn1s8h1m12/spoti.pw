@@ -133,6 +133,16 @@ void SGDistroAvailabilityForTrack(NSString *trackID, SGDistroAvailabilityComplet
     });
 }
 
+void SGDistroPerformanceDataForTrack(NSString *trackID,
+                                     void (^completion)(NSDictionary *, NSError *)) {
+    if (!completion || trackID.length != 22) return;
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/performance-data/%@", kServer, trackID]];
+    requestJSON(url, YES, 60, ^(NSDictionary *json, NSInteger status, NSError *error) {
+        if (!error && status != 200 && status != 202) error = statusError(status, json);
+        onMain(^{ completion(error ? nil : json, error); });
+    });
+}
+
 void SGDistroPerformanceImageForTrack(NSString *trackID, void (^completion)(UIImage *, NSString *, NSError *)) {
     if (!completion || trackID.length != 22) return;
     NSString *key = serverKey();
