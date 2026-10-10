@@ -6,6 +6,7 @@
 #import "Shared/Spotify/Spclient.h"
 
 static NSMutableDictionary<NSString *, NSMutableDictionary *> *pages;
+static NSUInteger dfActiveRequests;
 static NSString *str(id s) { return [s isKindOfClass:NSString.class] ? s : [s isKindOfClass:NSURL.class] ? [s absoluteString] : nil; }
 static NSString *idFromURI(NSString *uri) {
     NSRange r = [uri rangeOfString:@"spotify:track:"];
@@ -84,7 +85,7 @@ static void finish(NSMutableDictionary *page) {
 }
 static void fetchPage(NSString *uri) {
     NSMutableDictionary *page=pages[uri];
-    if (!page || [page[@"busy"] boolValue] || [page[@"done"] boolValue]) return;
+    if (!page || [page[@"busy"] boolValue] || [page[@"done"] boolValue] || dfActiveRequests >= 2) return;
     NSInteger offset=[page[@"offset"] integerValue];
     NSURL *url=sourceURL(uri,offset);
     if (!url) return;
@@ -98,6 +99,7 @@ static void fetchPage(NSString *uri) {
         [request setValue:nil forHTTPHeaderField:header];
     request.timeoutInterval=12;
     page[@"busy"]=@YES;
+    dfActiveRequests++;
     [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error) {
         NSHTTPURLResponse *http=[response isKindOfClass:NSHTTPURLResponse.class]?(id)response:nil;
         id obj=(!error && http.statusCode==200 && data.length)
@@ -105,6 +107,7 @@ static void fetchPage(NSString *uri) {
         NSDictionary *json=[obj isKindOfClass:NSDictionary.class]?obj:nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             page[@"busy"]=@NO;
+            if (dfActiveRequests) dfActiveRequests--;
             NSArray *items=[json[@"items"] isKindOfClass:NSArray.class]?json[@"items"]:@[];
             NSMutableDictionary *index=page[@"index"];
             for (NSDictionary *wrapper in items) {
@@ -125,6 +128,13 @@ static void fetchPage(NSString *uri) {
             if (!json) NSLog(@"[distrofind] exact row API unavailable (HTTP %ld); no approximate badges",(long)http.statusCode);
             finish(page);
             if (!done && [page[@"pending"] count]) fetchPage(uri);
+            // Other visible pages wait for one of the two shared slots.
+            for (NSString *other in [pages.allKeys copy]) {
+                if (dfActiveRequests >= 2) break;
+                NSMutableDictionary *candidate = pages[other];
+                if (![candidate[@"done"] boolValue] && ![candidate[@"busy"] boolValue] &&
+                    [candidate[@"pending"] count]) fetchPage(other);
+            }
         });
     }] resume];
 }
