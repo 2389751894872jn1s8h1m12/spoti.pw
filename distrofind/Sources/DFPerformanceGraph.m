@@ -4,8 +4,10 @@
 
 // A native UIKit performance chart backed by the updated DistroFind
 // /performance-data/{track} endpoint. All values originate from server data.
-@interface DFHistoryPlot : UIView
+@interface DFHistoryPlot : UIView <UIGestureRecognizerDelegate>
 @property (nonatomic, copy) NSArray<NSDictionary *> *daily;
+@property (nonatomic) NSInteger selectedIndex;
+@property (nonatomic, strong) UILabel *detail;
 @end
 
 static NSString *DFShortCount(double number) {
@@ -17,6 +19,65 @@ static NSString *DFShortCount(double number) {
 }
 
 @implementation DFHistoryPlot
+- (instancetype)init {
+    if ((self = [super init])) {
+        _selectedIndex = NSNotFound;
+        _detail = [UILabel new];
+        _detail.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];
+        _detail.textColor = UIColor.whiteColor;
+        _detail.backgroundColor = [UIColor colorWithWhite:0.17 alpha:0.95];
+        _detail.layer.cornerRadius = 7;
+        _detail.clipsToBounds = YES;
+        _detail.textAlignment = NSTextAlignmentCenter;
+        _detail.adjustsFontSizeToFitWidth = YES;
+        _detail.minimumScaleFactor = 0.8;
+        _detail.hidden = YES;
+        [self addSubview:_detail];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(scrub:)];
+        pan.delegate = self;
+        pan.cancelsTouchesInView = NO;
+        [self addGestureRecognizer:pan];
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(scrub:)];
+        tap.delegate = self;
+        [self addGestureRecognizer:tap];
+        self.isAccessibilityElement = YES;
+        self.accessibilityLabel = @"Daily Spotify streams graph. Drag or tap to inspect a date.";
+    }
+    return self;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // Vertical movement must continue to scroll the info page.
+    return YES;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.detail.frame = CGRectMake(8, 2, MAX(1, self.bounds.size.width - 16), 23);
+}
+- (void)scrub:(UIGestureRecognizer *)gesture {
+    if (!self.daily.count || gesture.state == UIGestureRecognizerStateCancelled ||
+        gesture.state == UIGestureRecognizerStateFailed) return;
+    CGFloat plotLeft = 52, plotRight = 12;
+    CGFloat plotWidth = MAX(1, self.bounds.size.width - plotLeft - plotRight);
+    CGFloat touch = [gesture locationInView:self].x;
+    double progress = MIN(1, MAX(0, (touch - plotLeft) / plotWidth));
+    NSInteger index = (NSInteger)llround(progress * (self.daily.count - 1));
+    if (index == self.selectedIndex) return;
+    self.selectedIndex = index;
+    NSDictionary *item = self.daily[index];
+    NSString *date = [item[@"date"] isKindOfClass:NSString.class] ? item[@"date"] : @"Unknown day";
+    NSNumberFormatter *format = [NSNumberFormatter new];
+    format.numberStyle = NSNumberFormatterDecimalStyle;
+    NSString *value = [format stringFromNumber:@([item[@"streams"] doubleValue])] ?: @"0";
+    NSInteger start = MAX(0, index - 6);
+    double sum = 0;
+    for (NSInteger j = start; j <= index; j++) sum += [self.daily[j][@"streams"] doubleValue];
+    NSString *average = [format stringFromNumber:@(llround(sum / (index - start + 1)))] ?: @"0";
+    self.detail.text = [NSString stringWithFormat:@" %@ · %@ streams · avg %@ ", date, value, average];
+    self.detail.hidden = NO;
+    self.accessibilityValue = self.detail.text;
+    [self setNeedsDisplay];
+}
 - (void)drawRect:(CGRect)bounds {
     NSArray<NSDictionary *> *rows = self.daily;
     if (!rows.count) return;
@@ -85,6 +146,19 @@ static NSString *DFShortCount(double number) {
         [[UIColor colorWithWhite:1 alpha:0.6] setStroke];
         avg.lineWidth = 1.3;
         [avg stroke];
+        CGContextRestoreGState(ctx);
+    }
+    if (self.selectedIndex != NSNotFound && self.selectedIndex < (NSInteger)values.count) {
+        CGFloat x = px(self.selectedIndex);
+        CGContextSaveGState(ctx);
+        CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1 alpha:0.6].CGColor);
+        CGContextSetLineWidth(ctx, 1);
+        CGContextMoveToPoint(ctx, x, top);
+        CGContextAddLineToPoint(ctx, x, top + height);
+        CGContextStrokePath(ctx);
+        CGFloat y = py([values[self.selectedIndex] doubleValue]);
+        [[UIColor whiteColor] setFill];
+        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(x - 4.5, y - 4.5, 9, 9)] fill];
         CGContextRestoreGState(ctx);
     }
     CGPoint best = CGPointMake(px(highestIndex), py([values[highestIndex] doubleValue]));
