@@ -226,51 +226,6 @@ static UIView *DFFindIdentifier(UIView *root, NSArray<NSString *> *needles) {
     return nil;
 }
 
-static NSString *DFTrackIDInValue(id value) {
-    if ([value isKindOfClass:NSString.class] || [value isKindOfClass:NSURL.class]) return DFTrackIDFromURI(value);
-    if ([value isKindOfClass:NSDictionary.class]) {
-        for (id v in [(NSDictionary *)value allValues]) {
-            NSString *track = DFTrackIDInValue(v);
-            if (track) return track;
-        }
-    }
-    return nil;
-}
-
-static NSString *DFTrackIDInObject(id object, NSInteger depth, NSHashTable *seen) {
-    if (!object || depth < 0 || seen.count > 160) return nil;
-    NSString *direct = DFTrackIDInValue(object);
-    if (direct) return direct;
-    if ([seen containsObject:object]) return nil;
-    [seen addObject:object];
-
-    if ([object respondsToSelector:@selector(URI)]) {
-        @try {
-            id uri = ((id (*)(id, SEL))objc_msgSend)(object, @selector(URI));
-            NSString *track = DFTrackIDFromURI(uri);
-            if (track) return track;
-        } @catch (__unused NSException *e) {}
-    }
-
-    NSString *name = NSStringFromClass([object class]);
-    if ([name hasPrefix:@"NS"] || [name hasPrefix:@"UI"] || [name hasPrefix:@"CA"]) return nil;
-    for (Class cls = object_getClass(object); cls && cls != NSObject.class; cls = class_getSuperclass(cls)) {
-        unsigned int count = 0;
-        Ivar *ivars = class_copyIvarList(cls, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            const char *type = ivar_getTypeEncoding(ivars[i]);
-            if (!type || type[0] != '@') continue;
-            @try {
-                id child = object_getIvar(object, ivars[i]);
-                NSString *track = DFTrackIDInObject(child, depth - 1, seen);
-                if (track) { free(ivars); return track; }
-            } @catch (__unused NSException *e) {}
-        }
-        free(ivars);
-    }
-    return nil;
-}
-
 static NSString *DFTrackForCell(UIView *cell, NSString *title, NSString *artist) {
     // Only the verified, source-backed ID associated with this exact row.
     // Never use the current player's title/artist as a playlist ID guess.
