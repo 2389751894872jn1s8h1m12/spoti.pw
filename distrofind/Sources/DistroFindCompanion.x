@@ -13,7 +13,7 @@ static NSMutableDictionary<NSString *, NSString *> *df_trackByKey;
 static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *df_tracksByTitle;
 static NSMutableDictionary<NSString *, SGDistroMetadata *> *df_metadata;
 static NSString *df_filter = @"";
-static char kDFTrackKey, kDFBadgeKey;
+static char kDFTrackKey, kDFBadgeKey, kDFLookupKey;
 static NSString *DFCurrentTrackID(void);
 static NSObject *df_playbackLock;
 static NSString *df_lastQueuedTrackID;
@@ -22,7 +22,8 @@ static CFAbsoluteTime df_lastPlaybackPoll;
 static BOOL df_refreshQueued;
 static NSMutableDictionary<NSString *, NSMutableArray *> *df_pendingLookups;
 static void DFPresentDashboard(NSString *trackID);
-void DFRowResolveTrack(NSString *title, NSString *artist, void (^completion)(NSString *trackID));
+void DFRowResolveTrack(NSString *title, NSString *artist, UIView *cell,
+                       void (^completion)(NSString *trackID));
 UIViewController *DFPerformanceGraphController(NSDictionary *data);
 
 static NSString *DFURIString(id uri) {
@@ -271,16 +272,10 @@ static NSString *DFTrackIDInObject(id object, NSInteger depth, NSHashTable *seen
 }
 
 static NSString *DFTrackForCell(UIView *cell, NSString *title, NSString *artist) {
-    // Swift object ivar reflection is expensive and can touch unsafe layout.
-    // It remains opt-in solely for diagnostic builds.
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"distrofind.experimentalRowIntrospection"]) {
-        NSString *graph = DFTrackIDInObject(cell, 3, [NSHashTable weakObjectsHashTable]);
-        if (graph) return graph;
-    }
-    NSString *exact = df_trackByKey[DFKey(title, artist)];
-    if (exact) return exact;
-    NSSet *ids = df_tracksByTitle[DFNormalize(title)];
-    return ids.count == 1 ? ids.anyObject : nil;
+    // Only the verified, source-backed ID associated with this exact row.
+    // Never use the current player's title/artist as a playlist ID guess.
+    NSString *sid = objc_getAssociatedObject(cell, &kDFTrackKey);
+    return sid.length == 22 ? sid : nil;
 }
 
 // Neutral chip with an internal marquee; the chip itself stays still.
@@ -356,22 +351,23 @@ static void DFApplyCell(UIView *cell) {
     NSString *artist = DFLabelInside(subtitleView).text ?: @"";
     NSString *trackID = DFTrackForCell(cell, titleLabel.text, artist);
     if (!trackID.length) {
-        // Look up every visible row, not just tracks already played.
-        CGRect boundsInWindow = [cell convertRect:cell.bounds toView:cell.window];
-        CGFloat center = CGRectGetMidY(boundsInWindow);
-        if (cell.window && center >= -110 && center <= cell.window.bounds.size.height + 110) {
+        CGRect onScreen = [cell convertRect:cell.bounds toView:cell.window];
+        CGFloat center = CGRectGetMidY(onScreen);
+        NSString *lookupKey = DFKey(titleLabel.text, artist);
+        if (cell.window && center >= -110 && center <= cell.window.bounds.size.height + 110
+            && ![objc_getAssociatedObject(cell, &kDFLookupKey) isEqualToString:lookupKey]) {
+            objc_setAssociatedObject(cell, &kDFLookupKey, lookupKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
             __weak UIView *weakCell = cell;
-            NSString *wantedTitle = [titleLabel.text copy], *wantedArtist = [artist copy];
-            DFRowResolveTrack(wantedTitle, wantedArtist, ^(NSString *resolved) {
+            NSString *wantedTitle = [titleLabel.text copy];
+            NSString *wantedArtist = [artist copy];
+            DFRowResolveTrack(wantedTitle, wantedArtist, cell, ^(NSString *verified) {
                 UIView *visible = weakCell;
-                if (!visible || !resolved.length || !visible.window) return;
-                UIView *title = DFFindIdentifier(visible, @[@"Track.Row.Content.Title", @"Granular.Title"]);
-                if (![DFLabelInside(title).text isEqualToString:wantedTitle]) return;
-                df_trackByKey[DFKey(wantedTitle, wantedArtist)] = resolved;
-                NSString *normalized = DFNormalize(wantedTitle);
-                NSMutableSet *ids = df_tracksByTitle[normalized];
-                if (!ids) df_tracksByTitle[normalized] = ids = [NSMutableSet set];
-                [ids addObject:resolved];
+                if (!visible || !visible.window || !verified.length) return;
+                UIView *currentTitle = DFFindIdentifier(visible, @[@"Track.Row.Content.Title", @"Granular.Title"]);
+                UIView *currentArtist = DFFindIdentifier(visible, @[@"Track.Row.Content.Subtitle", @"Granular.Subtitle"]);
+                if (![DFLabelInside(currentTitle).text isEqualToString:wantedTitle]
+                    || ![(DFLabelInside(currentArtist).text ?: @"") isEqualToString:wantedArtist]) return;
+                objc_setAssociatedObject(visible, &kDFTrackKey, verified, OBJC_ASSOCIATION_COPY_NONATOMIC);
                 [visible setNeedsLayout];
             });
         }
@@ -393,9 +389,23 @@ static void DFApplyCell(UIView *cell) {
     CGRect titleRect = [titleLabel convertRect:titleLabel.bounds toView:cell];
     CGFloat renderedTitle = [titleLabel.text sizeWithAttributes:@{NSFontAttributeName:titleLabel.font}].width;
     CGFloat inlineX = CGRectGetMinX(titleRect) + MIN(renderedTitle, titleRect.size.width) + 8;
-    CGFloat maxX = MAX(4, cell.bounds.size.width - width - 48);
-    CGFloat x = inlineX <= maxX ? inlineX : MAX(CGRectGetMinX(titleRect), maxX);
-    CGFloat y = MAX(3, CGRectGetMidY(titleRect) - height / 2.0);
+    // Keep the chip INSIDE the text column, not under the + / saved control.
+    CGFloat columnRight = MIN(CGRectGetMaxX(titleRect), cell.bounds.size.width - 75);
+    CGFloat x, y;
+    if (inlineX + width <= columnRight) {
+        x = inlineX;
+        y = CGRectGetMidY(titleRect) - height / 2.0;
+    } else {
+        // Long title: place the chip beside the artist, still within the
+        // title/artist region rather than next to the playlist add control.
+        UILabel *artistLabel = DFLabelInside(subtitleView);
+        CGRect artistRect = artistLabel ? [artistLabel convertRect:artistLabel.bounds toView:cell] : titleRect;
+        CGFloat artistEnd = CGRectGetMinX(artistRect) +
+            MIN([artist sizeWithAttributes:@{NSFontAttributeName:artistLabel.font ?: titleLabel.font}].width, artistRect.size.width);
+        x = MIN(MAX(CGRectGetMinX(titleRect), artistEnd + 8), MAX(CGRectGetMinX(titleRect), columnRight - width));
+        y = CGRectGetMidY(artistRect) - height / 2.0;
+    }
+    y = MAX(2, y);
     CGRect next = CGRectMake(x, y, width, height);
     if (!CGRectEqualToRect(badge.frame, next)) badge.frame = next;
     BOOL reject = DFFilterRejects(meta);
@@ -482,7 +492,7 @@ static BOOL DFShouldCollapse(UIView *cell) {
     NSDictionary *item = self.items[indexPath.row];
     cell.textLabel.text = item[@"title"] ?: @"";
     cell.detailTextLabel.text = item[@"subtitle"] ?: @"";
-    cell.detailTextLabel.numberOfLines = 2;
+    cell.detailTextLabel.numberOfLines = 0;
     cell.accessoryType = item[@"uri"] ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
     return cell;
 }
@@ -620,7 +630,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 4; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 14;
+    if (section == 0) return 15;
     if (section == 1) return 4;
     if (section == 2) return 2;
     return 2;
@@ -646,7 +656,8 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
         m.isrc ?: @"—",
         m.upc ?: @"—",
         m.licensorUUID ?: @"—",
-        m.copyrights.count ? [m.copyrights componentsJoinedByString:@"\n"] : @"—",
+        m.pLine.length ? m.pLine : @"Not supplied by Spotify",
+        m.cLine.length ? m.cLine : @"Not supplied by Spotify",
         duration,
         live,
     ];
@@ -654,17 +665,19 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 
 - (UITableViewCell *)basicCell:(UITableView *)tableView title:(NSString *)title value:(NSString *)value action:(BOOL)action {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"dfdash"];
-    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"dfdash"];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"dfdash"];
     cell.textLabel.text = title;
     cell.detailTextLabel.text = value;
     cell.detailTextLabel.numberOfLines = 2;
     cell.accessoryType = action ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+    cell.textLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
     return cell;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) {
-        NSArray *names = @[@"Track", @"Artist(s)", @"Distributor", @"Parent", @"Likely sub-distributor", @"Album", @"Label", @"Release date", @"ISRC", @"UPC", @"Licensor UUID", @"Copyright", @"Duration", @"Went live"];
+        NSArray *names = @[@"Track", @"Artist(s)", @"Distributor", @"Parent", @"Likely sub-distributor", @"Album", @"Label", @"Release date", @"ISRC", @"UPC", @"Licensor UUID", @"℗ line", @"© line", @"Duration", @"Went live"];
         return [self basicCell:tableView title:names[indexPath.row] value:[self infoValues][indexPath.row] action:NO];
     }
     if (indexPath.section == 1) {
@@ -970,6 +983,7 @@ void DFUIOpenTrackInfo(NSString *trackID) { DFPresentDashboard(trackID); }
 - (void)prepareForReuse {
     %orig;
     objc_setAssociatedObject(self, &kDFTrackKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(self, &kDFLookupKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
     UIView *view = (UIView *)self;
     view.alpha = 1;
     view.userInteractionEnabled = YES;
@@ -993,6 +1007,7 @@ void DFUIOpenTrackInfo(NSString *trackID) { DFPresentDashboard(trackID); }
 - (void)prepareForReuse {
     %orig;
     objc_setAssociatedObject(self, &kDFTrackKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(self, &kDFLookupKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
     UIView *view = (UIView *)self;
     view.alpha = 1;
     view.userInteractionEnabled = YES;
