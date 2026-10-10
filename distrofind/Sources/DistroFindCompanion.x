@@ -339,7 +339,9 @@ static void DFApplyCell(UIView *cell) {
     NSString *name = meta ? SGDistroDisplayName(meta) : @"…";
     [badge setBadgeText:name.length ? name : @"Unknown"];
     CGSize size = [badge.textView.text sizeWithAttributes:@{NSFontAttributeName:badge.textView.font}];
-    CGFloat width = MIN(138, MAX(42, ceil(size.width) + 16));
+    // Narrow enough to fit beside short mobile titles; longer names move
+    // inside the chip via the marquee instead of pushing it under Save/+.
+    CGFloat width = MIN(100, MAX(42, ceil(size.width) + 16));
     CGFloat height = 18;
     CGRect titleRect = [titleLabel convertRect:titleLabel.bounds toView:cell];
     CGFloat renderedTitle = [titleLabel.text sizeWithAttributes:@{NSFontAttributeName:titleLabel.font}].width;
