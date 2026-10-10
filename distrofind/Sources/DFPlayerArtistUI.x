@@ -76,6 +76,7 @@ static NSString *DFUIArtistFromPage(UIViewController *controller) {
 @interface DFInfoChip : UIControl
 @property (nonatomic, copy) NSString *trackID;
 @property (nonatomic, strong) UILabel *text;
+@property (nonatomic) BOOL layoutAllowed;
 - (void)refresh;
 @end
 @implementation DFInfoChip
@@ -101,7 +102,7 @@ static NSString *DFUIArtistFromPage(UIViewController *controller) {
 - (void)refresh {
     NSString *name = DFUITrackDistributor(self.trackID);
     // Never draw a provisional chip over Spotify's real title while loading.
-    self.hidden = !name.length;
+    self.hidden = !self.layoutAllowed || !name.length;
     if ([_text.text isEqualToString:name]) return;
     _text.text = name ?: @"";
     [_text.layer removeAnimationForKey:@"df.player.marquee"];
@@ -171,6 +172,7 @@ static void DFUIInstallTitle(UIView *host) {
     } else if (artistBounds.size.width > 0) {
         // A clipped marquee might not expose a UILabel at all. Don't put the
         // distributor on top of a name whose real width we cannot measure.
+        chip.layoutAllowed = NO;
         chip.hidden = YES;
         return;
     }
@@ -180,13 +182,15 @@ static void DFUIInstallTitle(UIView *host) {
                         CGRectGetMaxX(artistBounds) - 2);
     CGFloat available = right - x;
     if (available < 58 || artistBounds.size.height < 12) {
+        chip.layoutAllowed = NO;
         chip.hidden = YES;
         return;
     }
     CGFloat width = MIN(118, available);
     CGRect frame = CGRectMake(round(x), round(CGRectGetMidY(artistBounds) - 10), round(width), 20);
     if (!CGRectEqualToRect(chip.frame, frame)) chip.frame = frame;
-    chip.hidden = !DFUITrackDistributor(trackID).length;
+    chip.layoutAllowed = YES;
+    chip.hidden = ![DFUITrackDistributor(trackID) length];
     if (chip.superview == host) [host bringSubviewToFront:chip];
 }
 
