@@ -119,6 +119,24 @@ static NSString *dateText(NSDictionary *object) {
     return [NSString stringWithFormat:@"%04ld", (long)year];
 }
 
+static NSString *copyrightOfType(NSDictionary *album, NSString *type) {
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSDictionary *item in array(album[@"copyright"])) {
+        NSString *text = string(item[@"text"]);
+        NSString *kind = [string(item[@"type"]) uppercaseString];
+        if (!text.length) continue;
+        BOOL typeMatch = [kind isEqualToString:type];
+        if (!kind.length) {
+            NSString *clean = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            typeMatch = [type isEqualToString:@"P"]
+                ? ([clean hasPrefix:@"℗"] || [clean hasPrefix:@"(P)"] || [clean hasPrefix:@"(p)"])
+                : ([clean hasPrefix:@"©"] || [clean hasPrefix:@"(C)"] || [clean hasPrefix:@"(c)"]);
+        }
+        if (typeMatch) [lines addObject:text];
+    }
+    return lines.count ? [lines componentsJoinedByString:@"\n"] : nil;
+}
+
 static NSString *coverURL(NSDictionary *album) {
     NSArray *images = array(dict(album[@"cover_group"])[@"image"]);
     NSDictionary *best = nil;
@@ -265,6 +283,8 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
         meta.releaseDate = dateText(albumInfo) ?: dateText(album) ?: @"";
         meta.coverURL = coverURL(albumInfo) ?: coverURL(album) ?: @"";
         meta.copyrights = [finalCopyrights copy];
+        meta.pLine = copyrightOfType(albumInfo, @"P") ?: copyrightOfType(album, @"P") ?: @"";
+        meta.cLine = copyrightOfType(albumInfo, @"C") ?: copyrightOfType(album, @"C") ?: @"";
         meta.artistIDs = [[NSOrderedSet orderedSetWithArray:artists] array];
         meta.durationMs = [track[@"duration"] integerValue];
         meta.trackNumber = [track[@"number"] integerValue];
@@ -294,7 +314,11 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
         if ([candidate[@"rename"] boolValue]) needsRename = YES;
     }
     NSString *albumGID = string(album[@"gid"]);
-    if (albumGID.length && ((!rule && (!label.length || (needsCopyright && !copyrights.count) || (needsUPC && !upc.length))) || needsRename)) {
+    // Full album metadata carries UPC and separated ℗/© lines that are often
+    // missing in track's inline album stub. One cached album request supplies them.
+    BOOL needsInfo = !upc.length || !copyrightOfType(album, @"P").length || !copyrightOfType(album, @"C").length;
+    if (albumGID.length && (needsInfo || ((!rule && (!label.length ||
+        (needsCopyright && !copyrights.count) || (needsUPC && !upc.length))) || needsRename))) {
         fetchJSON(metadataURL(@"album", albumGID), ^(NSDictionary *fullAlbum, NSError *error) {
             build(fullAlbum ?: @{});
         });
