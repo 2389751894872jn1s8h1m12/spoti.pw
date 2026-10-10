@@ -22,6 +22,8 @@ static CFAbsoluteTime df_lastPlaybackPoll;
 static BOOL df_refreshQueued;
 static NSMutableDictionary<NSString *, NSMutableArray *> *df_pendingLookups;
 static void DFPresentDashboard(NSString *trackID);
+void DFRowResolveTrack(NSString *title, NSString *artist, void (^completion)(NSString *trackID));
+UIViewController *DFPerformanceGraphController(NSDictionary *data);
 
 static NSString *DFURIString(id uri) {
     if ([uri isKindOfClass:NSURL.class]) return [(NSURL *)uri absoluteString];
@@ -279,14 +281,49 @@ static NSString *DFTrackForCell(UIView *cell, NSString *title, NSString *artist)
     return ids.count == 1 ? ids.anyObject : nil;
 }
 
-@interface DFBadgeLabel : UILabel
+// Neutral chip with an internal marquee; the chip itself stays still.
+@interface DFBadgeLabel : UIControl
 @property (nonatomic, copy) NSString *trackID;
+@property (nonatomic, strong) UILabel *textView;
+- (void)setBadgeText:(NSString *)value;
 @end
-
 @implementation DFBadgeLabel
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesEnded:touches withEvent:event];
-    if (self.trackID.length) DFPresentDashboard(self.trackID);
+- (instancetype)init {
+    if ((self = [super init])) {
+        self.backgroundColor = [UIColor colorWithWhite:1 alpha:0.13];
+        self.layer.cornerRadius = 6;
+        self.clipsToBounds = YES;
+        self.layer.zPosition = 50;
+        _textView = [UILabel new];
+        _textView.font = [UIFont systemFontOfSize:10 weight:UIFontWeightSemibold];
+        _textView.textColor = [UIColor colorWithWhite:1 alpha:0.88];
+        _textView.userInteractionEnabled = NO;
+        [self addSubview:_textView];
+        [self addTarget:self action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
+    }
+    return self;
+}
+- (void)open { if (self.trackID.length) DFPresentDashboard(self.trackID); }
+- (void)setBadgeText:(NSString *)value {
+    if ([_textView.text isEqualToString:value]) return;
+    [_textView.layer removeAnimationForKey:@"df.marquee"];
+    _textView.text = value;
+    [self setNeedsLayout];
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat realWidth = ceil([_textView.text sizeWithAttributes:@{NSFontAttributeName:_textView.font}].width) + 12;
+    CGFloat innerWidth = MAX(1, self.bounds.size.width - 12);
+    CGFloat overflow = MAX(0, realWidth - innerWidth);
+    _textView.frame = CGRectMake(6, 0, MAX(innerWidth, realWidth), self.bounds.size.height);
+    if (overflow > 2 && ![_textView.layer animationForKey:@"df.marquee"] && self.window) {
+        CAKeyframeAnimation *animation = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.x"];
+        animation.values = @[@0, @0, @(-overflow), @(-overflow), @0];
+        animation.keyTimes = @[@0, @0.16, @0.57, @0.75, @1];
+        animation.duration = MAX(6, overflow / 12.0 + 3);
+        animation.repeatCount = HUGE_VALF;
+        [_textView.layer addAnimation:animation forKey:@"df.marquee"];
+    }
 }
 @end
 
@@ -294,14 +331,6 @@ static DFBadgeLabel *DFBadge(UIView *cell) {
     DFBadgeLabel *badge = objc_getAssociatedObject(cell, &kDFBadgeKey);
     if (!badge) {
         badge = [DFBadgeLabel new];
-        badge.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
-        badge.textAlignment = NSTextAlignmentCenter;
-        badge.textColor = [UIColor colorWithWhite:1 alpha:0.88];
-        badge.backgroundColor = [UIColor colorWithWhite:1 alpha:0.13];
-        badge.layer.cornerRadius = 6;
-        badge.clipsToBounds = YES;
-        badge.userInteractionEnabled = YES;
-        badge.layer.zPosition = 50;
         [cell addSubview:badge];
         objc_setAssociatedObject(cell, &kDFBadgeKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -324,7 +353,30 @@ static void DFApplyCell(UIView *cell) {
     UIView *subtitleView = DFFindIdentifier(cell, @[@"Track.Row.Content.Subtitle", @"Granular.Subtitle"]);
     NSString *artist = DFLabelInside(subtitleView).text ?: @"";
     NSString *trackID = DFTrackForCell(cell, titleLabel.text, artist);
-    if (!trackID.length) return;
+    if (!trackID.length) {
+        // Look up every visible row, not just tracks already played.
+        CGRect boundsInWindow = [cell convertRect:cell.bounds toView:cell.window];
+        CGFloat center = CGRectGetMidY(boundsInWindow);
+        if (cell.window && center >= -110 && center <= cell.window.bounds.size.height + 110) {
+            __weak UIView *weakCell = cell;
+            NSString *wantedTitle = [titleLabel.text copy], *wantedArtist = [artist copy];
+            DFRowResolveTrack(wantedTitle, wantedArtist, ^(NSString *resolved) {
+                UIView *visible = weakCell;
+                if (!visible || !resolved.length || !visible.window) return;
+                UIView *title = DFFindIdentifier(visible, @[@"Track.Row.Content.Title", @"Granular.Title"]);
+                if (![DFLabelInside(title).text isEqualToString:wantedTitle]) return;
+                df_trackByKey[DFKey(wantedTitle, wantedArtist)] = resolved;
+                NSString *normalized = DFNormalize(wantedTitle);
+                NSMutableSet *ids = df_tracksByTitle[normalized];
+                if (!ids) df_tracksByTitle[normalized] = ids = [NSMutableSet set];
+                [ids addObject:resolved];
+                [visible setNeedsLayout];
+            });
+        }
+        DFBadgeLabel *existing = objc_getAssociatedObject(cell, &kDFBadgeKey);
+        existing.hidden = YES;
+        return;
+    }
     objc_setAssociatedObject(cell, &kDFTrackKey, trackID, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     DFBadgeLabel *badge = DFBadge(cell);
@@ -332,12 +384,18 @@ static void DFApplyCell(UIView *cell) {
     badge.hidden = NO;
     SGDistroMetadata *meta = df_metadata[trackID];
     NSString *name = meta ? SGDistroDisplayName(meta) : @"…";
-    badge.text = name.length ? name : @"Unknown";
-    CGSize size = [badge.text sizeWithAttributes:@{NSFontAttributeName: badge.font}];
-    CGFloat width = MIN(120, MAX(42, ceil(size.width) + 14));
-    CGFloat height = 16;
-    badge.frame = CGRectMake(MAX(4, cell.bounds.size.width - width - 48),
-                             MAX(2, cell.bounds.size.height - height - 5), width, height);
+    [badge setBadgeText:name.length ? name : @"Unknown"];
+    CGSize size = [badge.textView.text sizeWithAttributes:@{NSFontAttributeName:badge.textView.font}];
+    CGFloat width = MIN(138, MAX(42, ceil(size.width) + 16));
+    CGFloat height = 18;
+    CGRect titleRect = [titleLabel convertRect:titleLabel.bounds toView:cell];
+    CGFloat renderedTitle = [titleLabel.text sizeWithAttributes:@{NSFontAttributeName:titleLabel.font}].width;
+    CGFloat inlineX = CGRectGetMinX(titleRect) + MIN(renderedTitle, titleRect.size.width) + 8;
+    CGFloat maxX = MAX(4, cell.bounds.size.width - width - 48);
+    CGFloat x = inlineX <= maxX ? inlineX : MAX(CGRectGetMinX(titleRect), maxX);
+    CGFloat y = MAX(3, CGRectGetMidY(titleRect) - height / 2.0);
+    CGRect next = CGRectMake(x, y, width, height);
+    if (!CGRectEqualToRect(badge.frame, next)) badge.frame = next;
     BOOL reject = DFFilterRejects(meta);
     cell.alpha = reject ? 0.15 : 1;
     cell.userInteractionEnabled = !reject;
@@ -524,6 +582,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 @interface DFDashboardController : UITableViewController
+@property (nonatomic, copy) NSString *artistIDOverride;
 @property (nonatomic, copy) NSString *trackID;
 @property (nonatomic, strong) SGDistroMetadata *meta;
 - (instancetype)initWithTrackID:(NSString *)trackID;
@@ -668,10 +727,24 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 - (void)performance {
-    SGDistroPerformanceImageForTrack(self.trackID, ^(UIImage *image, NSString *message, NSError *error) {
-        if (error && !message.length) { [self showError:error title:@"Performance"]; return; }
-        DFImageController *vc = [[DFImageController alloc] initWithTitle:@"Performance" image:image message:message];
-        [self.navigationController pushViewController:vc animated:YES];
+    SGDistroPerformanceDataForTrack(self.trackID, ^(NSDictionary *json, NSError *error) {
+        if (!error && [json[@"ready"] boolValue] && [json[@"daily"] isKindOfClass:NSArray.class] &&
+            [json[@"daily"] count]) {
+            UIViewController *graph = DFPerformanceGraphController(json);
+            [self.navigationController pushViewController:graph animated:YES];
+            return;
+        }
+        // Older servers expose only the PNG endpoint. If new server says
+        // "not ready", show that status rather than treating it as an error.
+        if (!error && json && ![json[@"ready"] boolValue] && [json[@"message"] isKindOfClass:NSString.class]) {
+            [self showText:@"Performance" text:json[@"message"]];
+            return;
+        }
+        SGDistroPerformanceImageForTrack(self.trackID, ^(UIImage *image, NSString *message, NSError *imageError) {
+            DFImageController *vc = [[DFImageController alloc] initWithTitle:@"Performance" image:image
+                message:message ?: imageError.localizedDescription ?: @"Not enough performance data yet."];
+            [self.navigationController pushViewController:vc animated:YES];
+        });
     });
 }
 
@@ -688,7 +761,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 - (void)artistScan {
-    NSString *artistID = DFPageArtistID();
+    NSString *artistID = self.artistIDOverride ?: DFPageArtistID();
     if (!artistID.length) { [self showText:@"Artist Scan" text:@"Open an artist page, or play one of the artist's tracks, then run Artist Scan again."]; return; }
     self.navigationItem.prompt = @"Reading artist releases…";
     DFArtistReleases(artistID, ^(NSArray<DFRelease *> *releases, NSError *error) {
@@ -715,7 +788,7 @@ static void DFCheckRegions(NSArray<DFRelease *> *releases, NSUInteger start, voi
 }
 
 - (void)regionedReleases {
-    NSString *artistID = DFPageArtistID();
+    NSString *artistID = self.artistIDOverride ?: DFPageArtistID();
     if (!artistID.length) { [self showText:@"Regioned Releases" text:@"Open an artist page, or play one of the artist's tracks, then run the scan again."]; return; }
     self.navigationItem.prompt = @"Checking release regions…";
     DFArtistReleases(artistID, ^(NSArray<DFRelease *> *releases, NSError *error) {
@@ -760,6 +833,18 @@ static void DFPresentDashboard(NSString *trackID) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:page];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     [DFTopController() presentViewController:nav animated:YES completion:nil];
+}
+
+// Artist-page actions use the same existing scan methods, on the real artist ID.
+void DFUIOpenArtistTool(NSString *artistID, BOOL regions) {
+    if (!artistID.length) return;
+    DFDashboardController *page = [[DFDashboardController alloc] initWithTrackID:DFCurrentTrackID()];
+    page.artistIDOverride = artistID;
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:page];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [DFTopController() presentViewController:nav animated:YES completion:^{
+        if (regions) [page regionedReleases]; else [page artistScan];
+    }];
 }
 
 @interface DFTarget : NSObject
@@ -876,7 +961,10 @@ static UIButton *DFBarButton(UIViewController *controller) {
     UIView *view = (UIView *)self;
     view.alpha = 1;
     view.userInteractionEnabled = YES;
-    [DFBadge(view) setText:@"…"];
+    DFBadgeLabel *badge = objc_getAssociatedObject(view, &kDFBadgeKey);
+    badge.trackID = nil;
+    [badge setBadgeText:@"…"];
+    badge.hidden = YES;
 }
 %end
 
@@ -896,7 +984,8 @@ static UIButton *DFBarButton(UIViewController *controller) {
     UIView *view = (UIView *)self;
     view.alpha = 1;
     view.userInteractionEnabled = YES;
-    UILabel *badge = objc_getAssociatedObject(view, &kDFBadgeKey);
+    DFBadgeLabel *badge = objc_getAssociatedObject(view, &kDFBadgeKey);
+    badge.trackID = nil;
     badge.hidden = YES;
 }
 %end
