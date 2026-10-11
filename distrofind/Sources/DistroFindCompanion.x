@@ -18,6 +18,7 @@ static NSArray<NSString *> *kSubtitleIDs(void) { return @[@"Track.Row.Content.Su
 
 static __weak SPTPlayerTrack *df_currentTrack;
 static NSString *df_currentTrackID;
+static NSString *df_currentTitle, *df_currentArtist;
 static __weak SPTLinkDispatcherImplementation *df_linkDispatcher;
 static NSMutableDictionary<NSString *, SGDistroMetadata *> *df_metadata;
 static NSString *df_filter = @"";
@@ -1289,6 +1290,8 @@ static void DFPresentDashboard(NSString *trackID) {
 #pragma mark - for DFPlayerArtistUI.x
 
 NSString *DFUICurrentTrackID(void) { return DFCurrentTrackID(); }
+NSString *DFUICurrentTitle(void) { return df_currentTitle; }
+NSString *DFUICurrentArtist(void) { return df_currentArtist; }
 NSString *DFUITrackDistributor(NSString *trackID) {
     return trackID.length ? SGDistroDisplayName(df_metadata[trackID]) : nil;
 }
@@ -1307,11 +1310,10 @@ void DFUIOpenArtistTool(NSString *artistID, BOOL regions) {
 
 // In DFPlayerArtistUI.x: the placement the player's chip uses, beside a title and an artist and never
 // over either or under a control.
-BOOL DFUIPlaceChipBesideText(DFChip *chip, UIView *root, UIView *title, UIView *artist, CGFloat height);
+BOOL DFUIPlaceChipBesideText(DFChip *chip, UIView *root, UIView *title, UIView *artist, CGFloat height, NSString **why);
 void DFUIShowChip(DFChip *chip, BOOL shown);
 
 static NSString *const kBarChipID = @"DistroFind.NowPlaying.Badge";
-static NSString *df_currentTitle, *df_currentArtist;
 
 static DFChip *DFBarChip(UIViewController *controller) {
     static char key;
@@ -1400,7 +1402,7 @@ static void DFPlaceBarChip(UIViewController *controller) {
     [chip setChipText:name];
     UILabel *title = nil, *artist = nil;
     DFBarTextLabels(root, chip, &title, &artist);
-    BOOL placed = title && DFUIPlaceChipBesideText(chip, root, title, artist, 16);
+    BOOL placed = title && DFUIPlaceChipBesideText(chip, root, title, artist, 16, NULL);
     DFUIShowChip(chip, placed);
     static dispatch_once_t once;
     dispatch_once(&once, ^{

@@ -43,6 +43,8 @@ extern NSString *DFUITrackDistributor(NSString *trackID);
 extern void DFUIRequestDistributor(NSString *trackID);
 extern void DFUIOpenTrackInfo(NSString *trackID);
 extern void DFUIOpenArtistTool(NSString *artistID, BOOL regions);
+extern NSString *DFUICurrentTitle(void);
+extern NSString *DFUICurrentArtist(void);
 
 // Read once, as the mod reads it: a change takes the restart the mod already asks for. The redesign
 // only exists from iOS 26 on, whatever is stored.
@@ -64,7 +66,7 @@ static const CGFloat kChipHeight = 18;
 // A sheet this soon after the artist's ⋯ was used is the artist's.
 static const NSTimeInterval kMenuWindow = 3;
 
-static char kChipKey, kInfoKey, kQueuedKey, kMenuArtistKey, kMenuBlockKey;
+static char kInfoKey, kQueuedKey, kMenuArtistKey, kMenuBlockKey;
 static __weak UIView *df_infoHost;
 static NSString *df_menuArtist;
 static CFAbsoluteTime df_menuArtistAt;
@@ -122,15 +124,57 @@ static UIView *DFUIArrangedAround(UIView *view, UIView *host) {
 
 #pragma mark - a chip beside a title and an artist
 
-// Where text may run to inside `root`: the left edge of the first thing at the trailing end -- a control,
-// or any small identified piece that is not text (Spotify's add button and ✓, the devices glyph, play,
-// an Encore button that takes its taps through a recognizer and so is not a UIControl). Views holding the
-// title or the artist are looked into, never counted; the text's own views are skipped.
-static CGFloat DFUITrailingEdge(UIView *root, UIView *title, UIView *artist, CGFloat textStart, UIView *chip) {
+// One line of text as it is drawn, in `root`: where the text starts by the label's alignment, where it
+// ends, and how far the line can be seen before a clipping view between cuts it (a marquee title
+// scrolls inside a clip of its own). `fits` is whether the whole text shows.
+typedef struct {
+    BOOL valid, fits;
+    CGFloat start, end, midY, minY, maxY, labelWidth, textWidth;
+} DFUITextLine;
+
+static DFUITextLine DFUILineOf(UIView *view, UIView *root) {
+    DFUITextLine line = {0};
+    UILabel *label = DFUILabelIn(view);
+    if (!label) return line;
+    CGRect frame = [label convertRect:label.bounds toView:root];
+    CGFloat text = DFUITextWidth(label);
+    if (text <= 0 || frame.size.width <= 0) return line;
+    CGFloat shown = MIN(text, frame.size.width);
+    BOOL rtl = label.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+    CGFloat start = CGRectGetMinX(frame);
+    if (label.textAlignment == NSTextAlignmentCenter) start += (frame.size.width - shown) / 2;
+    else if (label.textAlignment == NSTextAlignmentRight || (rtl && label.textAlignment == NSTextAlignmentNatural))
+        start = CGRectGetMaxX(frame) - shown;
+    CGRect visible = frame;
+    for (UIView *v = label.superview; v && v != root; v = v.superview) {
+        if (v.clipsToBounds) visible = CGRectIntersection(visible, [v convertRect:v.bounds toView:root]);
+    }
+    CGFloat visibleEnd = CGRectIsNull(visible) ? start : CGRectGetMaxX(visible);
+    line.valid = YES;
+    line.start = start;
+    line.end = start + text;
+    line.midY = CGRectGetMidY(frame);
+    line.minY = CGRectGetMinY(frame);
+    line.maxY = CGRectGetMaxY(frame);
+    line.labelWidth = frame.size.width;
+    line.textWidth = text;
+    // A few points' slack: a label sized to its own text is often a fraction narrower than the
+    // rounded-up measure of that text.
+    line.fits = text <= frame.size.width + 3 && line.end <= visibleEnd + 3;
+    return line;
+}
+
+// Where text on the line [minY, maxY] may run to inside `root`: the left edge of the first thing on that
+// line at its trailing end -- a control, or any small identified piece that is not text (Spotify's add
+// button and its check mark, the devices glyph, play, an Encore button that takes its taps through a
+// recognizer and so is not a UIControl). Only what shares the line counts. Views holding the title or
+// the artist are looked into, never counted; the text's own views are skipped.
+static CGFloat DFUITrailingEdge(UIView *root, UIView *title, UIView *artist, CGFloat textStart,
+                                CGFloat minY, CGFloat maxY, UIView *chip) {
     CGFloat width = root.bounds.size.width, right = width - 12;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:root.subviews];
     NSUInteger visited = 0;
-    while (queue.count && visited++ < 220) {
+    while (queue.count && visited++ < 400) {
         UIView *view = queue.firstObject;
         [queue removeObjectAtIndex:0];
         if (view == chip || view.hidden || view.alpha < 0.01 || [view isKindOfClass:UIScrollView.class]) continue;
@@ -140,7 +184,8 @@ static CGFloat DFUITrailingEdge(UIView *root, UIView *title, UIView *artist, CGF
             CGRect frame = [view convertRect:view.bounds toView:root];
             BOOL control = [view isKindOfClass:UIControl.class];
             BOOL accessory = view.accessibilityIdentifier.length && frame.size.width <= 64 && frame.size.height >= 12;
-            if ((control || accessory) && frame.size.width > 0 && frame.size.width < width * 0.4 &&
+            BOOL onLine = CGRectGetMaxY(frame) > minY + 2 && CGRectGetMinY(frame) < maxY - 2;
+            if ((control || accessory) && onLine && frame.size.width > 0 && frame.size.width < width * 0.4 &&
                 CGRectGetMinX(frame) > textStart + 40) {
                 right = MIN(right, CGRectGetMinX(frame));
                 continue;
@@ -151,34 +196,42 @@ static CGFloat DFUITrailingEdge(UIView *root, UIView *title, UIView *artist, CGF
     return right - 6;
 }
 
-// Puts `chip` (a subview of `root`) after the title when the whole title shows and the chip fits before
-// the trailing controls, else after the artist on the same terms, else nowhere: it is never drawn over
-// either text or under a control. Measured in `root` through every transform between, so a title the
-// redesign has moved is followed. Used by the player and by the now playing bar.
-BOOL DFUIPlaceChipBesideText(DFChip *chip, UIView *root, UIView *title, UIView *artist, CGFloat height) {
+// Puts `chip` after the title when the whole title shows and the chip fits before what follows it on
+// that line, else after the artist on the same terms, else nowhere: it is never drawn over either text
+// or under a control. Measured in `root` (the area to look for controls in) through every transform
+// between, and set in the chip's own superview. Used by the player and by the now playing bar. `why`
+// says what stopped it, for the log.
+BOOL DFUIPlaceChipBesideText(DFChip *chip, UIView *root, UIView *title, UIView *artist, CGFloat height, NSString **why) {
     if (!chip || !root || !title) return NO;
     const CGFloat gap = 8, minWidth = 44, maxWidth = 120;
     CGFloat wanted = MIN(maxWidth, MAX(minWidth, [chip fittingWidth]));
-    UILabel *titleLabel = DFUILabelIn(title);
-    CGRect titleRect = [title convertRect:title.bounds toView:root];
-    CGFloat right = DFUITrailingEdge(root, title, artist, CGRectGetMinX(titleRect), chip);
     CGRect frame = CGRectNull;
-    CGFloat titleText = DFUITextWidth(titleLabel);
-    // A title that scrolls has no end to sit after.
-    if (titleText > 0 && titleText <= titleRect.size.width + 0.5) {
-        CGFloat x = CGRectGetMinX(titleRect) + titleText + gap;
-        if (x + minWidth <= right) frame = CGRectMake(x, CGRectGetMidY(titleRect) - height / 2, MIN(wanted, right - x), height);
-    }
-    if (CGRectIsNull(frame) && artist) {
-        UILabel *artistLabel = DFUILabelIn(artist);
-        CGRect artistRect = [artist convertRect:artist.bounds toView:root];
-        CGFloat artistText = DFUITextWidth(artistLabel);
-        if (artistText > 0 && artistText <= artistRect.size.width + 0.5) {
-            CGFloat x = CGRectGetMinX(artistRect) + artistText + gap;
-            if (x + minWidth <= right) frame = CGRectMake(x, CGRectGetMidY(artistRect) - height / 2, MIN(wanted, right - x), height);
+    NSMutableArray<NSString *> *reasons = [NSMutableArray array];
+    NSArray<UIView *> *lines = artist ? @[title, artist] : @[title];
+    for (UIView *view in lines) {
+        NSString *which = view == title ? @"title" : @"artist";
+        DFUITextLine line = DFUILineOf(view, root);
+        if (!line.valid) {
+            [reasons addObject:[which stringByAppendingString:@" has no text"]];
+            continue;
         }
+        if (!line.fits) {
+            [reasons addObject:[NSString stringWithFormat:@"%@ cut off (%.0f of %.0f)", which, line.textWidth, line.labelWidth]];
+            continue;
+        }
+        CGFloat right = DFUITrailingEdge(root, title, artist, line.start, line.minY, line.maxY, chip);
+        CGFloat x = line.end + gap;
+        if (x + minWidth > right) {
+            [reasons addObject:[NSString stringWithFormat:@"%@ ends at %.0f, controls at %.0f", which, line.end, right]];
+            continue;
+        }
+        frame = CGRectMake(x, line.midY - height / 2, MIN(wanted, right - x), height);
+        break;
     }
+    if (why) *why = [reasons componentsJoinedByString:@"; "];
     if (CGRectIsNull(frame)) return NO;
+    UIView *parent = chip.superview ?: root;
+    if (parent != root) frame = [root convertRect:frame toView:parent];
     frame = CGRectMake(round(frame.origin.x), round(frame.origin.y), round(frame.size.width), height);
     if (!CGRectEqualToRect(chip.frame, frame)) chip.frame = frame;
     return YES;
@@ -194,10 +247,12 @@ void DFUIShowChip(DFChip *chip, BOOL shown) {
 
 #pragma mark - the player: the distributor chip
 
-static DFChip *DFUIPlayerChip(UIView *host) {
-    DFChip *chip = objc_getAssociatedObject(host, &kChipKey);
-    if (!chip) {
-        chip = [[DFChip alloc] initWithFontSize:11];
+static DFChip *df_playerChip;
+static __weak UIView *df_playerTitle, *df_playerArtist;
+
+static DFChip *DFUIPlayerChip(void) {
+    if (!df_playerChip) {
+        DFChip *chip = [[DFChip alloc] initWithFontSize:11];
         chip.backgroundColor = [UIColor colorWithWhite:1 alpha:0.17];
         chip.accessibilityIdentifier = @"DistroFind.Redesigned.Player.Distributor";
         chip.layer.zPosition = 50;
@@ -206,33 +261,91 @@ static DFChip *DFUIPlayerChip(UIView *host) {
             if (trackID.length) DFUIOpenTrackInfo(trackID);
         };
         DFUIShowChip(chip, NO);
-        objc_setAssociatedObject(host, &kChipKey, chip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        df_playerChip = chip;
         NSLog(@"[distrofind] redesigned player distributor chip created");
     }
-    return chip;
+    return df_playerChip;
 }
 
-static void DFUILogChipOnce(NSString *why) {
+static void DFUILogChip(NSString *why) {
     static NSMutableSet *said;
     if (!said) said = [NSMutableSet set];
-    if ([said containsObject:why]) return;
+    if (!why.length || [said containsObject:why] || said.count > 40) return;
     [said addObject:why];
     NSLog(@"[distrofind] player chip: %@", why);
 }
 
-// On the information unit itself, the way the chip was drawn when it showed: Spotify's title sits in a
-// clipping view of its own, and a chip put in there is cut off.
-static void DFUIPlaceTitleChip(UIView *host) {
-    if (!host.window) return;
-    UIView *title = DFUIFind(host, @"now-playing-title-label", 10);
-    if (!title) {
-        DFUILogChipOnce(@"no now-playing-title-label in the information unit");
-        return;
-    }
-    UIView *artist = DFUIFind(host, @"now-playing-subtitle-label", 10);
-    df_infoHost = host;
+static NSString *DFUITrim(NSString *text) {
+    return [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+}
 
-    DFChip *chip = DFUIPlayerChip(host);
+// The visible label in `root` showing `text` (or starting with it), the largest type first: the player's
+// title is its biggest text.
+static UILabel *DFUILabelShowing(UIView *root, NSString *text, BOOL prefix, UIView *skip) {
+    NSString *want = DFUITrim(text);
+    if (want.length < 2) return nil;
+    UILabel *best = nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSUInteger visited = 0;
+    while (queue.count && visited++ < 800) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (view == skip || view.hidden || view.alpha < 0.01) continue;
+        if ([view isKindOfClass:UILabel.class]) {
+            UILabel *label = (UILabel *)view;
+            NSString *shown = DFUITrim(label.text);
+            BOOL match = prefix ? [shown hasPrefix:want] : [shown isEqualToString:want];
+            if (match && (!best || label.font.pointSize > best.font.pointSize)) best = label;
+            continue;
+        }
+        [queue addObjectsFromArray:view.subviews];
+    }
+    return best;
+}
+
+// The information unit's view around `view`, where the chip lives: it holds the title, the artist and
+// the add button, and is a plain view of a controller rather than one of Spotify's stacks.
+static UIView *DFUIUnitHostOf(UIView *view) {
+    for (UIView *v = view; v; v = v.superview) {
+        UIResponder *next = v.nextResponder;
+        if (![next isKindOfClass:UIViewController.class] || ((UIViewController *)next).viewIfLoaded != v) continue;
+        if ([NSStringFromClass(next.class) containsString:@"InformationElementsUnit"]) return v;
+    }
+    return nil;
+}
+
+static BOOL DFUIStillIn(UIView *view, UIView *root) {
+    return view.window && [view isDescendantOfView:root];
+}
+
+// Called with the information unit's view or the whole player's: either holds the title. The title and
+// the artist are found by Spotify's identifiers, else by showing the playing track's title and artist.
+static void DFUIPlaceTitleChip(UIView *root) {
+    if (!root.window) return;
+    DFChip *chip = DFUIPlayerChip();
+    UIView *title = df_playerTitle, *artist = df_playerArtist;
+    if (!DFUIStillIn(title, root)) {
+        title = DFUIFind(root, @"now-playing-title-label", 14);
+        artist = title ? DFUIFind(root, @"now-playing-subtitle-label", 14) : nil;
+        if (!title) {
+            title = DFUILabelShowing(root, DFUICurrentTitle(), NO, chip);
+            NSString *firstArtist = [DFUITrim(DFUICurrentArtist()) componentsSeparatedByString:@", "].firstObject;
+            artist = title ? DFUILabelShowing(root, firstArtist, YES, chip) : nil;
+            if (artist == title) artist = nil;
+            if (title) DFUILogChip(@"title found by its text, not by Spotify's identifier");
+        }
+        if (!title) {
+            DFUILogChip(@"no title found in the player");
+            return;
+        }
+        df_playerTitle = title;
+        df_playerArtist = artist;
+    } else if (artist && !DFUIStillIn(artist, root)) {
+        artist = nil;
+    }
+
+    UIView *host = DFUIUnitHostOf(title) ?: root;
+    df_infoHost = host;
     if (chip.superview != host) [host addSubview:chip];
     else if (host.subviews.lastObject != chip) [host bringSubviewToFront:chip];
 
@@ -243,13 +356,19 @@ static void DFUIPlaceTitleChip(UIView *host) {
     if (!name.length) {
         DFUIShowChip(chip, NO);
         if (trackID.length) DFUIRequestDistributor(trackID);
-        else DFUILogChipOnce(@"no playing track known yet");
+        else DFUILogChip(@"no playing track known yet");
         return;
     }
     [chip setChipText:name];
-    BOOL placed = DFUIPlaceChipBesideText(chip, host, title, artist, kChipHeight);
-    if (!placed) DFUILogChipOnce(@"no room beside the title or the artist for this track");
+    NSString *why = nil;
+    BOOL placed = DFUIPlaceChipBesideText(chip, host, title, artist, kChipHeight, &why);
+    if (!placed) DFUILogChip(why.length ? why : @"no room beside the title or the artist");
     DFUIShowChip(chip, placed);
+    static BOOL loggedPlaced;
+    if (placed && !loggedPlaced) {
+        loggedPlaced = YES;
+        NSLog(@"[distrofind] player chip placed at %@ in %@", NSStringFromCGRect(chip.frame), NSStringFromClass(host.class));
+    }
 }
 
 #pragma mark - the player: ⓘ in the footer
@@ -421,6 +540,15 @@ static DFUIPlayerObserver *df_playerObserver;
 }
 %end
 
+// The whole player lays out on opening, on a new track and when the lyrics come and go, whether or not
+// the information unit does.
+%hook _TtC19NowPlaying_ViewImpl24NowPlayingViewController
+- (void)viewDidLayoutSubviews {
+    %orig;
+    DFUIPlaceTitleChip(((UIViewController *)self).viewIfLoaded);
+}
+%end
+
 %hook _TtC20NowPlaying_ModesImpl18FooterElementsUnit
 - (void)viewDidLayoutSubviews {
     %orig;
@@ -436,13 +564,15 @@ static DFUIPlayerObserver *df_playerObserver;
 // information or the footer unit, decided once per class. Installed only when the names above are missing.
 static NSString *const kInfoUnitClass = @"_TtC20NowPlaying_ModesImpl23InformationElementsUnit";
 static NSString *const kFooterUnitClass = @"_TtC20NowPlaying_ModesImpl18FooterElementsUnit";
+static NSString *const kPlayerClass = @"_TtC19NowPlaying_ViewImpl24NowPlayingViewController";
 static char kUnitKindKey;
 
 static NSInteger DFUIUnitKind(Class cls) {
     NSNumber *kind = objc_getAssociatedObject(cls, &kUnitKindKey);
     if (!kind) {
         NSString *name = NSStringFromClass(cls);
-        kind = @([name containsString:@"InformationElementsUnit"] ? 1 : [name containsString:@"FooterElementsUnit"] ? 2 : 0);
+        kind = @([name containsString:@"InformationElementsUnit"] || [name containsString:@"NowPlayingViewController"] ? 1 :
+                 [name containsString:@"FooterElementsUnit"] ? 2 : 0);
         objc_setAssociatedObject(cls, &kUnitKindKey, kind, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return kind.integerValue;
@@ -875,7 +1005,7 @@ static UIMenu *DFUIArtistMenuFor(UIView *button, UIMenu *menu) {
         return;
     }
     %init(DFRedesignedPlayer);
-    if (!NSClassFromString(kInfoUnitClass) || !NSClassFromString(kFooterUnitClass)) {
+    if (!NSClassFromString(kInfoUnitClass) || !NSClassFromString(kFooterUnitClass) || !NSClassFromString(kPlayerClass)) {
         %init(DFRedesignedPlayerFallback);
         NSLog(@"[distrofind] player units found by name (info %@, footer %@)",
               NSClassFromString(kInfoUnitClass) ? @"exact" : @"by name", NSClassFromString(kFooterUnitClass) ? @"exact" : @"by name");
