@@ -82,13 +82,9 @@ static void DFRefreshVisible(void) {
                         for (UICollectionViewCell *cell in ((UICollectionView *)view).visibleCells)
                             [cell setNeedsLayout];
                     }
-                    if ([view isKindOfClass:UIButton.class] &&
-                        [view.accessibilityIdentifier isEqualToString:@"DistroFind.NowPlaying.Badge"]) {
-                        UIButton *button = (UIButton *)view;
-                        NSString *name = SGDistroDisplayName(df_metadata[DFCurrentTrackID()]) ?: @"DistroFind…";
-                        if (![[button titleForState:UIControlStateNormal] isEqualToString:name])
-                            [button setTitle:name forState:UIControlStateNormal];
-                    }
+                    // The bar's chip is placed by the bar's own layout pass.
+                    if ([view isKindOfClass:DFChip.class] && [view.accessibilityIdentifier isEqualToString:@"DistroFind.NowPlaying.Badge"])
+                        [view.superview setNeedsLayout];
                     [stack addObjectsFromArray:view.subviews];
                 }
             }
@@ -1307,34 +1303,110 @@ void DFUIOpenArtistTool(NSString *artistID, BOOL regions) {
         tool:regions ? DFArtistToolRegions : DFArtistToolScan], nil);
 }
 
-@interface DFTarget : NSObject
-+ (instancetype)shared;
-- (void)openDashboard:(id)sender;
-@end
+#pragma mark - the now playing bar
 
-@implementation DFTarget
-+ (instancetype)shared { static DFTarget *x; static dispatch_once_t once; dispatch_once(&once, ^{ x = [DFTarget new]; }); return x; }
-- (void)openDashboard:(id)sender {
-    DFPresentDashboard(DFCurrentTrackID());
-}
-@end
+// In DFPlayerArtistUI.x: the placement the player's chip uses, beside a title and an artist and never
+// over either or under a control.
+BOOL DFUIPlaceChipBesideText(DFChip *chip, UIView *root, UIView *title, UIView *artist, CGFloat height);
+void DFUIShowChip(DFChip *chip, BOOL shown);
 
-static UIButton *DFBarButton(UIViewController *controller) {
+static NSString *const kBarChipID = @"DistroFind.NowPlaying.Badge";
+static NSString *df_currentTitle, *df_currentArtist;
+
+static DFChip *DFBarChip(UIViewController *controller) {
     static char key;
-    UIButton *button = objc_getAssociatedObject(controller, &key);
-    if (!button) {
-        button = [UIButton buttonWithType:UIButtonTypeSystem];
-        button.titleLabel.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
-        button.tintColor = UIColor.whiteColor;
-        button.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
-        button.layer.cornerRadius = 7;
-        button.clipsToBounds = YES;
-        button.accessibilityIdentifier = @"DistroFind.NowPlaying.Badge";
-        [button addTarget:[DFTarget shared] action:@selector(openDashboard:) forControlEvents:UIControlEventTouchUpInside];
-        [controller.view addSubview:button];
-        objc_setAssociatedObject(controller, &key, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DFChip *chip = objc_getAssociatedObject(controller, &key);
+    if (!chip) {
+        chip = [[DFChip alloc] initWithFontSize:10];
+        chip.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
+        chip.accessibilityIdentifier = kBarChipID;
+        chip.layer.zPosition = 50;
+        chip.onTap = ^(DFChip *tapped) {
+            NSString *trackID = tapped.trackID.length ? tapped.trackID : DFCurrentTrackID();
+            if (trackID.length) DFPresentDashboard(trackID);
+        };
+        DFUIShowChip(chip, NO);
+        objc_setAssociatedObject(controller, &key, chip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    return button;
+    UIView *root = controller.view;
+    if (chip.superview != root) [root addSubview:chip];
+    else if (root.subviews.lastObject != chip) [root bringSubviewToFront:chip];
+    return chip;
+}
+
+// The bar's visible labels, top to bottom then leading first. The chip's own is left out.
+static NSArray<UILabel *> *DFBarLabels(UIView *root, UIView *chip) {
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSUInteger visited = 0;
+    while (queue.count && visited++ < 300) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (view == chip || view.hidden || view.alpha < 0.01) continue;
+        if ([view isKindOfClass:UILabel.class] && ((UILabel *)view).text.length) [labels addObject:(UILabel *)view];
+        [queue addObjectsFromArray:view.subviews];
+    }
+    [labels sortUsingComparator:^NSComparisonResult(UILabel *a, UILabel *b) {
+        CGRect ra = [a convertRect:a.bounds toView:root], rb = [b convertRect:b.bounds toView:root];
+        if (fabs(CGRectGetMinY(ra) - CGRectGetMinY(rb)) > 4) return CGRectGetMinY(ra) < CGRectGetMinY(rb) ? NSOrderedAscending : NSOrderedDescending;
+        return CGRectGetMinX(ra) < CGRectGetMinX(rb) ? NSOrderedAscending : NSOrderedDescending;
+    }];
+    return labels;
+}
+
+static NSString *DFTrimmed(NSString *text) {
+    return [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+}
+
+// The bar's title and artist labels: the ones showing the playing track's title and artist (whoever
+// draws the bar, Spotify or the redesign's mini player), else the first two lines in the bar's leading half.
+static void DFBarTextLabels(UIView *root, UIView *chip, UILabel **title, UILabel **artist) {
+    NSArray<UILabel *> *labels = DFBarLabels(root, chip);
+    NSString *wantTitle = DFTrimmed(df_currentTitle), *wantArtist = DFTrimmed(df_currentArtist);
+    NSString *firstArtist = [wantArtist componentsSeparatedByString:@", "].firstObject;
+    UILabel *foundTitle = nil, *foundArtist = nil;
+    for (UILabel *label in labels) {
+        NSString *text = DFTrimmed(label.text);
+        if (!foundTitle && wantTitle.length && [text isEqualToString:wantTitle]) foundTitle = label;
+        else if (!foundArtist && wantArtist.length && ([text isEqualToString:wantArtist] ||
+                 (firstArtist.length >= 2 && [text hasPrefix:firstArtist]))) foundArtist = label;
+    }
+    if (!foundTitle) {
+        CGFloat half = root.bounds.size.width / 2;
+        NSMutableArray<UILabel *> *leading = [NSMutableArray array];
+        for (UILabel *label in labels) {
+            if (CGRectGetMinX([label convertRect:label.bounds toView:root]) < half) [leading addObject:label];
+        }
+        if (leading.count >= 1) foundTitle = leading[0];
+        if (!foundArtist && leading.count >= 2) foundArtist = leading[1];
+    }
+    *title = foundTitle;
+    *artist = foundArtist != foundTitle ? foundArtist : nil;
+}
+
+static void DFPlaceBarChip(UIViewController *controller) {
+    UIView *root = controller.viewIfLoaded;
+    if (!root.window) return;
+    DFChip *chip = DFBarChip(controller);
+    NSString *trackID = DFCurrentTrackID();
+    chip.trackID = trackID;
+    SGDistroMetadata *meta = df_metadata[trackID];
+    NSString *name = SGDistroDisplayName(meta);
+    if (!name.length) {
+        DFUIShowChip(chip, NO);
+        if (trackID.length && !meta) DFResolve(trackID, nil);
+        return;
+    }
+    [chip setChipText:name];
+    UILabel *title = nil, *artist = nil;
+    DFBarTextLabels(root, chip, &title, &artist);
+    BOOL placed = title && DFUIPlaceChipBesideText(chip, root, title, artist, 16);
+    DFUIShowChip(chip, placed);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSLog(@"[distrofind] now playing bar chip: title %@, artist %@, %@", title ? @"found" : @"missing",
+              artist ? @"found" : @"missing", placed ? @"placed beside the text" : @"no room, hidden");
+    });
 }
 
 // Do not call a track property getter synchronously from Spotify's frequently-invoked playback state
@@ -1368,6 +1440,8 @@ static UIButton *DFBarButton(UIViewController *controller) {
             if (changed) {
                 df_currentTrack = track;
                 df_currentTrackID = [trackID copy];
+                df_currentTitle = [track.trackTitle copy];
+                df_currentArtist = [track.artistName copy];
                 SGLog(@"DistroFind queued new playing track");
                 DFResolve(trackID, nil);
                 [[NSNotificationCenter defaultCenter] postNotificationName:DFCurrentTrackChangedNotification object:trackID];
@@ -1389,17 +1463,7 @@ static UIButton *DFBarButton(UIViewController *controller) {
 %hook _TtC18NowPlaying_BarImpl27NowPlayingBarViewController
 - (void)viewDidLayoutSubviews {
     %orig;
-    UIViewController *controller = (UIViewController *)self;
-    UIButton *button = DFBarButton(controller);
-    NSString *trackID = DFCurrentTrackID();
-    SGDistroMetadata *meta = df_metadata[trackID];
-    NSString *name = SGDistroDisplayName(meta) ?: (trackID.length ? @"DistroFind…" : @"DistroFind");
-    if (![[button titleForState:UIControlStateNormal] isEqualToString:name])
-        [button setTitle:name forState:UIControlStateNormal];
-    CGFloat width = MIN(116, MAX(64, [name sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}].width + 16));
-    CGRect bounds = controller.view.bounds;
-    button.frame = CGRectMake(MAX(56, bounds.size.width - width - 52), MAX(2, bounds.size.height - 19), width, 16);
-    if (trackID.length && !meta) DFResolve(trackID, nil);
+    DFPlaceBarChip((UIViewController *)self);
 }
 %end
 

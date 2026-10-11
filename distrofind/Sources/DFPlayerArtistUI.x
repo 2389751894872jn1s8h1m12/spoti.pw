@@ -5,9 +5,9 @@
 //
 // - The distributor chip sits after the title when the whole title shows and the chip fits before the
 //   add button, else after the artist line, else nowhere: it is never drawn over Spotify's text. It is a
-//   subview of the arranged element that holds the title and the artist, not of the unit, so when the
-//   lyrics lift the title up beside the thumbnail (the redesign's PlayerLyrics.x moves that element) the
-//   chip goes with it. Tapping it opens Track Info.
+//   subview of the information unit (inside the title's own clipping view it was cut off), measured
+//   through the transforms between, so a title the lyrics have moved is followed on the next pass.
+//   Tapping it opens Track Info. The now playing bar's chip is placed by the same function.
 //
 // - ⓘ joins the footer as a fourth glyph after Lyrics, Devices and Queue. The redesign spreads its three
 //   at 20/50/80% of the footer's width (PlayerFooter.x); with four they go to 20/40/60/80% so the row
@@ -21,10 +21,12 @@
 // them in the same layout pass. Should that ever be the other way round, a pass is also queued for
 // right after, which puts the row back.
 //
-// **The artist page's ⋯: either look.** Artist Scan and Regioned Releases are two rows of the sheet,
-// laid out the way the redesign's own rows on that sheet are (PlaylistMenu.x). Spotify's rows come from
-// Swift item factories with no ObjC surface, so nothing can go between them; the closest place to
-// "under Go to radio" is right after Spotify's last row, the table's footer. Which sheet is the artist's
+// **The artist page's ⋯: either look.** Under the redesign the pinned ⋯ opens a system menu, and the two
+// actions go into it right after Go to radio (below). Where Spotify's own sheet shows instead (the native
+// look, or a menu the redesign gave up on), they are two rows of the sheet, laid out the way the
+// redesign's own rows on that sheet are (PlaylistMenu.x). Spotify's rows come from Swift item factories
+// with no ObjC surface, so nothing can go between them there; the closest place to "under Go to radio" is
+// right after Spotify's last row, the table's footer. Which sheet is the artist's
 // is known from the ⋯ that opened it: the artist header's ⋯ is
 // Components.UI.ContextMenuButton-<artist id> on the creator page (the redesign's ArtistFollow.x reads the
 // id the same way, since the artist page's controllers carry no URI), and the redesign's pinned ⋯ sits
@@ -58,7 +60,7 @@ static NSString *const kCreatorPage = @"creator-page";
 // The redesign's footer: where its outermost glyphs sit, as parts of the footer's width.
 static const CGFloat kLeading = 0.2, kTrailing = 0.8;
 static const CGFloat kGlyphMaxWidth = 30, kInfoGlyphSize = 20, kTouch = 44;
-static const CGFloat kChipHeight = 18, kChipGap = 8, kChipMinWidth = 44, kChipMaxWidth = 120;
+static const CGFloat kChipHeight = 18;
 // A sheet this soon after the artist's ⋯ was used is the artist's.
 static const NSTimeInterval kMenuWindow = 3;
 
@@ -118,6 +120,78 @@ static UIView *DFUIArrangedAround(UIView *view, UIView *host) {
     return nil;
 }
 
+#pragma mark - a chip beside a title and an artist
+
+// Where text may run to inside `root`: the left edge of the first thing at the trailing end -- a control,
+// or any small identified piece that is not text (Spotify's add button and ✓, the devices glyph, play,
+// an Encore button that takes its taps through a recognizer and so is not a UIControl). Views holding the
+// title or the artist are looked into, never counted; the text's own views are skipped.
+static CGFloat DFUITrailingEdge(UIView *root, UIView *title, UIView *artist, CGFloat textStart, UIView *chip) {
+    CGFloat width = root.bounds.size.width, right = width - 12;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:root.subviews];
+    NSUInteger visited = 0;
+    while (queue.count && visited++ < 220) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (view == chip || view.hidden || view.alpha < 0.01 || [view isKindOfClass:UIScrollView.class]) continue;
+        if ((title && [view isDescendantOfView:title]) || (artist && [view isDescendantOfView:artist])) continue;
+        BOOL holdsText = (title && [title isDescendantOfView:view]) || (artist && [artist isDescendantOfView:view]);
+        if (!holdsText && ![view isKindOfClass:UILabel.class]) {
+            CGRect frame = [view convertRect:view.bounds toView:root];
+            BOOL control = [view isKindOfClass:UIControl.class];
+            BOOL accessory = view.accessibilityIdentifier.length && frame.size.width <= 64 && frame.size.height >= 12;
+            if ((control || accessory) && frame.size.width > 0 && frame.size.width < width * 0.4 &&
+                CGRectGetMinX(frame) > textStart + 40) {
+                right = MIN(right, CGRectGetMinX(frame));
+                continue;
+            }
+        }
+        [queue addObjectsFromArray:view.subviews];
+    }
+    return right - 6;
+}
+
+// Puts `chip` (a subview of `root`) after the title when the whole title shows and the chip fits before
+// the trailing controls, else after the artist on the same terms, else nowhere: it is never drawn over
+// either text or under a control. Measured in `root` through every transform between, so a title the
+// redesign has moved is followed. Used by the player and by the now playing bar.
+BOOL DFUIPlaceChipBesideText(DFChip *chip, UIView *root, UIView *title, UIView *artist, CGFloat height) {
+    if (!chip || !root || !title) return NO;
+    const CGFloat gap = 8, minWidth = 44, maxWidth = 120;
+    CGFloat wanted = MIN(maxWidth, MAX(minWidth, [chip fittingWidth]));
+    UILabel *titleLabel = DFUILabelIn(title);
+    CGRect titleRect = [title convertRect:title.bounds toView:root];
+    CGFloat right = DFUITrailingEdge(root, title, artist, CGRectGetMinX(titleRect), chip);
+    CGRect frame = CGRectNull;
+    CGFloat titleText = DFUITextWidth(titleLabel);
+    // A title that scrolls has no end to sit after.
+    if (titleText > 0 && titleText <= titleRect.size.width + 0.5) {
+        CGFloat x = CGRectGetMinX(titleRect) + titleText + gap;
+        if (x + minWidth <= right) frame = CGRectMake(x, CGRectGetMidY(titleRect) - height / 2, MIN(wanted, right - x), height);
+    }
+    if (CGRectIsNull(frame) && artist) {
+        UILabel *artistLabel = DFUILabelIn(artist);
+        CGRect artistRect = [artist convertRect:artist.bounds toView:root];
+        CGFloat artistText = DFUITextWidth(artistLabel);
+        if (artistText > 0 && artistText <= artistRect.size.width + 0.5) {
+            CGFloat x = CGRectGetMinX(artistRect) + artistText + gap;
+            if (x + minWidth <= right) frame = CGRectMake(x, CGRectGetMidY(artistRect) - height / 2, MIN(wanted, right - x), height);
+        }
+    }
+    if (CGRectIsNull(frame)) return NO;
+    frame = CGRectMake(round(frame.origin.x), round(frame.origin.y), round(frame.size.width), height);
+    if (!CGRectEqualToRect(chip.frame, frame)) chip.frame = frame;
+    return YES;
+}
+
+// Shown and hidden by alpha, which is safe wherever the chip ends up.
+void DFUIShowChip(DFChip *chip, BOOL shown) {
+    CGFloat alpha = shown ? 1 : 0;
+    if (chip.alpha != alpha) chip.alpha = alpha;
+    if (chip.userInteractionEnabled != shown) chip.userInteractionEnabled = shown;
+    chip.accessibilityElementsHidden = !shown;
+}
+
 #pragma mark - the player: the distributor chip
 
 static DFChip *DFUIPlayerChip(UIView *host) {
@@ -126,69 +200,41 @@ static DFChip *DFUIPlayerChip(UIView *host) {
         chip = [[DFChip alloc] initWithFontSize:11];
         chip.backgroundColor = [UIColor colorWithWhite:1 alpha:0.17];
         chip.accessibilityIdentifier = @"DistroFind.Redesigned.Player.Distributor";
+        chip.layer.zPosition = 50;
         chip.onTap = ^(DFChip *tapped) {
             NSString *trackID = tapped.trackID.length ? tapped.trackID : DFUICurrentTrackID();
             if (trackID.length) DFUIOpenTrackInfo(trackID);
         };
+        DFUIShowChip(chip, NO);
         objc_setAssociatedObject(host, &kChipKey, chip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         NSLog(@"[distrofind] redesigned player distributor chip created");
     }
     return chip;
 }
 
-// Where the element's text may run to: its trailing edge, or the first control inside it past the text.
-static CGFloat DFUIElementRight(UIView *element, CGFloat textStart, UIView *chip) {
-    CGFloat right = element.bounds.size.width - 2;
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:element.subviews];
-    NSUInteger visited = 0;
-    while (queue.count && visited++ < 60) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        if (view == chip) continue;
-        if ([view isKindOfClass:UIControl.class] && !view.hidden && view.alpha > 0.01) {
-            CGRect frame = [view convertRect:view.bounds toView:element];
-            if (frame.size.width > 0 && CGRectGetMinX(frame) > textStart + 40) {
-                right = MIN(right, CGRectGetMinX(frame) - 4);
-                continue;
-            }
-        }
-        [queue addObjectsFromArray:view.subviews];
-    }
-    return right;
+static void DFUILogChipOnce(NSString *why) {
+    static NSMutableSet *said;
+    if (!said) said = [NSMutableSet set];
+    if ([said containsObject:why]) return;
+    [said addObject:why];
+    NSLog(@"[distrofind] player chip: %@", why);
 }
 
-// Shown and hidden by alpha: the chip lives in Spotify's element view, and Spotify's stacks trap when a
-// view in them hides (AGENTS.md).
-static void DFUIShowChip(DFChip *chip, BOOL shown) {
-    CGFloat alpha = shown ? 1 : 0;
-    if (chip.alpha != alpha) chip.alpha = alpha;
-    if (chip.userInteractionEnabled != shown) chip.userInteractionEnabled = shown;
-    chip.accessibilityElementsHidden = !shown;
-}
-
-static BOOL DFUIIsSpotifyStack(UIView *view) {
-    NSString *name = NSStringFromClass(view.class);
-    return [name containsString:@"OverflowStack"] || [name containsString:@"AutoLayoutStack"];
-}
-
+// On the information unit itself, the way the chip was drawn when it showed: Spotify's title sits in a
+// clipping view of its own, and a chip put in there is cut off.
 static void DFUIPlaceTitleChip(UIView *host) {
     if (!host.window) return;
-    UIView *titleClip = DFUIFind(host, @"now-playing-title-label", 10);
-    if (!titleClip) return;
-    UIView *artistClip = DFUIFind(host, @"now-playing-subtitle-label", 10);
-    UIView *element = DFUIArrangedAround(titleClip, host) ?: titleClip.superview;
-    // Into a plain element only; a stack of Spotify's own lays out (and traps on) what it holds, so there
-    // the chip stays on the unit, where it still never covers the text but does not follow the lyrics.
-    if (!element || DFUIIsSpotifyStack(element)) element = host;
+    UIView *title = DFUIFind(host, @"now-playing-title-label", 10);
+    if (!title) {
+        DFUILogChipOnce(@"no now-playing-title-label in the information unit");
+        return;
+    }
+    UIView *artist = DFUIFind(host, @"now-playing-subtitle-label", 10);
     df_infoHost = host;
 
     DFChip *chip = DFUIPlayerChip(host);
-    if (chip.superview != element) {
-        [chip removeFromSuperview];
-        [element addSubview:chip];
-    } else if (element.subviews.lastObject != chip) {
-        [element bringSubviewToFront:chip];
-    }
+    if (chip.superview != host) [host addSubview:chip];
+    else if (host.subviews.lastObject != chip) [host bringSubviewToFront:chip];
 
     NSString *trackID = DFUICurrentTrackID();
     chip.trackID = trackID;
@@ -197,38 +243,13 @@ static void DFUIPlaceTitleChip(UIView *host) {
     if (!name.length) {
         DFUIShowChip(chip, NO);
         if (trackID.length) DFUIRequestDistributor(trackID);
+        else DFUILogChipOnce(@"no playing track known yet");
         return;
     }
     [chip setChipText:name];
-    CGFloat wanted = MIN(kChipMaxWidth, MAX(kChipMinWidth, [chip fittingWidth]));
-
-    CGRect frame = CGRectNull;
-    UILabel *titleLabel = DFUILabelIn(titleClip);
-    CGRect titleRect = [titleClip convertRect:titleClip.bounds toView:element];
-    CGFloat right = DFUIElementRight(element, CGRectGetMinX(titleRect), chip);
-    // After the title, only when the whole title shows: a title that scrolls has no end to sit after.
-    CGFloat titleText = DFUITextWidth(titleLabel);
-    if (titleText > 0 && titleText <= titleRect.size.width + 0.5) {
-        CGFloat x = CGRectGetMinX(titleRect) + titleText + kChipGap;
-        if (x + kChipMinWidth <= right) frame = CGRectMake(x, CGRectGetMidY(titleRect) - kChipHeight / 2, MIN(wanted, right - x), kChipHeight);
-    }
-    // Else after the artist, on the same terms.
-    if (CGRectIsNull(frame) && artistClip) {
-        UILabel *artistLabel = DFUILabelIn(artistClip);
-        CGRect artistRect = [artistClip convertRect:artistClip.bounds toView:element];
-        CGFloat artistText = DFUITextWidth(artistLabel);
-        if (artistText > 0 && artistText <= artistRect.size.width + 0.5) {
-            CGFloat x = CGRectGetMinX(artistRect) + artistText + kChipGap;
-            if (x + kChipMinWidth <= right) frame = CGRectMake(x, CGRectGetMidY(artistRect) - kChipHeight / 2, MIN(wanted, right - x), kChipHeight);
-        }
-    }
-    if (CGRectIsNull(frame)) {
-        DFUIShowChip(chip, NO);
-        return;
-    }
-    frame = CGRectMake(round(frame.origin.x), round(frame.origin.y), round(frame.size.width), kChipHeight);
-    if (!CGRectEqualToRect(chip.frame, frame)) chip.frame = frame;
-    DFUIShowChip(chip, YES);
+    BOOL placed = DFUIPlaceChipBesideText(chip, host, title, artist, kChipHeight);
+    if (!placed) DFUILogChipOnce(@"no room beside the title or the artist for this track");
+    DFUIShowChip(chip, placed);
 }
 
 #pragma mark - the player: ⓘ in the footer
@@ -406,6 +427,41 @@ static DFUIPlayerObserver *df_playerObserver;
     UIView *host = ((UIViewController *)self).viewIfLoaded;
     DFUIPlaceFooter(host);
     if (host) DFUIQueueFooter(host);
+}
+%end
+
+%end
+
+// For a Spotify build whose units carry other Swift names: any controller whose class name says it is the
+// information or the footer unit, decided once per class. Installed only when the names above are missing.
+static NSString *const kInfoUnitClass = @"_TtC20NowPlaying_ModesImpl23InformationElementsUnit";
+static NSString *const kFooterUnitClass = @"_TtC20NowPlaying_ModesImpl18FooterElementsUnit";
+static char kUnitKindKey;
+
+static NSInteger DFUIUnitKind(Class cls) {
+    NSNumber *kind = objc_getAssociatedObject(cls, &kUnitKindKey);
+    if (!kind) {
+        NSString *name = NSStringFromClass(cls);
+        kind = @([name containsString:@"InformationElementsUnit"] ? 1 : [name containsString:@"FooterElementsUnit"] ? 2 : 0);
+        objc_setAssociatedObject(cls, &kUnitKindKey, kind, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return kind.integerValue;
+}
+
+%group DFRedesignedPlayerFallback
+
+%hook UIViewController
+- (void)viewDidLayoutSubviews {
+    %orig;
+    NSInteger kind = DFUIUnitKind(object_getClass(self));
+    if (!kind) return;
+    UIView *host = self.viewIfLoaded;
+    if (kind == 1) {
+        DFUIPlaceTitleChip(host);
+    } else if (host) {
+        DFUIPlaceFooter(host);
+        DFUIQueueFooter(host);
+    }
 }
 %end
 
@@ -646,7 +702,149 @@ static void DFUIArtistMenu(UIViewController *menu) {
     [table invalidateIntrinsicContentSize];
 }
 
+#pragma mark - the artist page's ⋯ as the redesign's system menu
+
+// spoti.pw 0.50's redesign opens the pinned ⋯ of an artist page as a system menu: Spotify's sheet is still
+// presented, out of sight, its rows are read into a UIMenu, and the menu is shown from a button of the
+// redesign's own over the ⋯ (SGRPlayerMenuAnchor in its source) -- set with -setMenu:, and refreshed in
+// place with -updateVisibleMenuWithBlock: once Spotify's rows are in. Rows added to Spotify's sheet never
+// reach that menu, so the two are added to the menu itself, right after Go to radio where it has one.
+
+static char kAnchorArtistKey;
+
+// The redesign's menu anchor, or a button over the artist header's ⋯, on an artist page.
+static NSString *DFUIArtistForMenuButton(UIView *button) {
+    if (![button isKindOfClass:UIButton.class]) return nil;
+    NSString *cached = objc_getAssociatedObject(button, &kAnchorArtistKey);
+    if (cached.length) return cached;
+    NSString *name = NSStringFromClass(button.class);
+    UIView *over = button.superview;
+    NSString *overName = NSStringFromClass(over.class);
+    // The anchor over the ⋯, or the pinned ⋯ itself should the menu be set on it straight.
+    BOOL anchor = [name containsString:@"Anchor"] || [name containsString:@"Mirror"] || [name containsString:@"Pinned"] ||
+                  [overName containsString:@"Mirror"] || [overName containsString:@"Pinned"] ||
+                  [over.accessibilityIdentifier hasPrefix:kArtistMoreButton] ||
+                  [over.accessibilityIdentifier isEqualToString:kCreatorPage];
+    if (!anchor) return nil;
+    UIView *page = DFUICreatorPage(button);
+    if (!page || DFUIInsideCell(button, page)) return nil;
+    NSString *artist = DFUIArtistFromIdentifier(over.accessibilityIdentifier) ?: DFUIArtistOnPage(page);
+    if (artist) objc_setAssociatedObject(button, &kAnchorArtistKey, artist, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return artist;
+}
+
+static BOOL DFUIIsContextSheet(UIViewController *controller, NSUInteger depth) {
+    if ([NSStringFromClass(controller.class) containsString:@"ContextMenu"]) return YES;
+    if (depth > 3) return NO;
+    for (UIViewController *child in controller.childViewControllers) {
+        if (DFUIIsContextSheet(child, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+// Spotify's sheet, still up behind the menu until the redesign takes it away after a pick of its own; a
+// sheet presented over it would go with it.
+static BOOL DFUIContextSheetUp(void) {
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        for (UIViewController *vc = window.rootViewController.presentedViewController; vc; vc = vc.presentedViewController) {
+            if (vc.isBeingDismissed || DFUIIsContextSheet(vc, 0)) return YES;
+        }
+    }
+    return NO;
+}
+
+static void DFUIOpenArtistToolWhenSettled(NSString *artist, BOOL regions, NSUInteger tries) {
+    if (tries < 30 && DFUIContextSheetUp()) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DFUIOpenArtistToolWhenSettled(artist, regions, tries + 1);
+        });
+        return;
+    }
+    DFUIOpenArtistTool(artist, regions);
+}
+
+static NSString *const kScanActionID = @"com.spotipw.distrofind.artist-scan";
+static NSString *const kRegionsActionID = @"com.spotipw.distrofind.regioned-releases";
+
+static BOOL DFUIMenuHasOurs(NSArray<UIMenuElement *> *children) {
+    for (UIMenuElement *element in children) {
+        if ([element isKindOfClass:UIAction.class] && [((UIAction *)element).identifier isEqualToString:kScanActionID]) return YES;
+        if ([element isKindOfClass:UIMenu.class] && DFUIMenuHasOurs(((UIMenu *)element).children)) return YES;
+    }
+    return NO;
+}
+
+// `children` with `ours` right after the first action that says radio, in any group, at any depth.
+static NSArray<UIMenuElement *> *DFUIInsertAfterRadio(NSArray<UIMenuElement *> *children, NSArray<UIMenuElement *> *ours, BOOL *done) {
+    NSMutableArray<UIMenuElement *> *out = [NSMutableArray array];
+    for (UIMenuElement *element in children) {
+        if (*done) {
+            [out addObject:element];
+        } else if ([element isKindOfClass:UIMenu.class]) {
+            UIMenu *menu = (UIMenu *)element;
+            NSArray *inner = DFUIInsertAfterRadio(menu.children, ours, done);
+            [out addObject:*done ? [menu menuByReplacingChildren:inner] : menu];
+        } else {
+            [out addObject:element];
+            NSString *title = [element isKindOfClass:UIAction.class] ? ((UIAction *)element).title : nil;
+            if (title && [title rangeOfString:@"radio" options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound) {
+                [out addObjectsFromArray:ours];
+                *done = YES;
+            }
+        }
+    }
+    return out;
+}
+
+static UIMenu *DFUIArtistMenuFor(UIView *button, UIMenu *menu) {
+    if (!menu) return menu;
+    NSString *artist = DFUIArtistForMenuButton(button);
+    if (!artist || DFUIMenuHasOurs(menu.children)) return menu;
+    UIAction *scan = [UIAction actionWithTitle:@"Artist Scan" image:[UIImage systemImageNamed:@"magnifyingglass"]
+        identifier:kScanActionID handler:^(UIAction *action) { DFUIOpenArtistToolWhenSettled(artist, NO, 0); }];
+    UIAction *regions = [UIAction actionWithTitle:@"Regioned Releases" image:[UIImage systemImageNamed:@"globe"]
+        identifier:kRegionsActionID handler:^(UIAction *action) { DFUIOpenArtistToolWhenSettled(artist, YES, 0); }];
+    NSArray<UIMenuElement *> *ours = @[scan, regions];
+    BOOL inserted = NO;
+    NSArray<UIMenuElement *> *children = DFUIInsertAfterRadio(menu.children, ours, &inserted);
+    if (!inserted) {
+        UIMenu *group = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:ours];
+        children = [menu.children arrayByAddingObject:group];
+    }
+    static NSMutableSet *logged;
+    if (!logged) logged = [NSMutableSet set];
+    NSString *line = inserted ? @"after Go to radio" : @"in a group of their own";
+    if (![logged containsObject:line]) {
+        [logged addObject:line];
+        NSLog(@"[distrofind] artist system menu gets Artist Scan and Regioned Releases %@", line);
+    }
+    return [menu menuByReplacingChildren:children];
+}
+
 %group DFArtistMenu
+
+%hook UIButton
+- (void)setMenu:(UIMenu *)menu {
+    UIMenu *withArtistTools = DFUIArtistMenuFor((UIView *)self, menu);
+    %orig(withArtistTools);
+}
+%end
+
+%hook UIContextMenuInteraction
+- (void)updateVisibleMenuWithBlock:(id)block {
+    UIView *button = self.view;
+    if (!block || !DFUIArtistForMenuButton(button)) {
+        %orig;
+        return;
+    }
+    UIMenu *(^original)(UIMenu *) = block;
+    __weak UIView *weakButton = button;
+    UIMenu *(^wrapped)(UIMenu *) = ^UIMenu *(UIMenu *visible) {
+        return DFUIArtistMenuFor(weakButton, original(visible));
+    };
+    %orig(wrapped);
+}
+%end
 
 %hook UIControl
 - (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
@@ -677,6 +875,11 @@ static void DFUIArtistMenu(UIViewController *menu) {
         return;
     }
     %init(DFRedesignedPlayer);
+    if (!NSClassFromString(kInfoUnitClass) || !NSClassFromString(kFooterUnitClass)) {
+        %init(DFRedesignedPlayerFallback);
+        NSLog(@"[distrofind] player units found by name (info %@, footer %@)",
+              NSClassFromString(kInfoUnitClass) ? @"exact" : @"by name", NSClassFromString(kFooterUnitClass) ? @"exact" : @"by name");
+    }
     df_playerObserver = [DFUIPlayerObserver new];
     NSLog(@"[distrofind] redesigned player: distributor chip and Info glyph installed");
 }
