@@ -203,7 +203,11 @@ static NSURL *metadataURL(NSString *kind, NSString *gid) {
         @"https://spclient.wg.spotify.com/metadata/4/%@/%@?market=from_token", kind, gid]];
 }
 
-static void fetchJSON(NSURL *url, void (^done)(NSDictionary *, NSError *)) {
+// A scan reads hundreds of releases, and spclient answers a burst with 429. Those, and a gateway that
+// failed for a moment, are asked again a little later instead of becoming an "Unknown" distributor.
+static const NSUInteger kFetchRetries = 3;
+
+static void fetchJSONAttempt(NSURL *url, NSUInteger attempt, void (^done)(NSDictionary *, NSError *)) {
     NSMutableURLRequest *request = SGSpclientRequest(url);
     if (!request) {
         NSError *error = [NSError errorWithDomain:@"spoti.pw.distrofind" code:1
@@ -213,7 +217,19 @@ static void fetchJSON(NSURL *url, void (^done)(NSDictionary *, NSError *)) {
     }
     request.timeoutInterval = 15;
     [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+        NSInteger status = http.statusCode;
+        BOOL transient = status == 429 || status == 502 || status == 503 || status == 504;
+        if (!error && transient && attempt < kFetchRetries) {
+            double delay = [[http valueForHTTPHeaderField:@"Retry-After"] doubleValue];
+            if (delay <= 0) delay = 1.5 * (attempt + 1);
+            delay = MIN(MAX(delay, 0.5), 10);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                fetchJSONAttempt(url, attempt + 1, done);
+            });
+            return;
+        }
         if (!error && (status < 200 || status >= 300)) {
             error = [NSError errorWithDomain:@"spoti.pw.distrofind" code:status
                 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Spotify metadata returned %ld", (long)status]}];
@@ -229,6 +245,10 @@ static void fetchJSON(NSURL *url, void (^done)(NSDictionary *, NSError *)) {
     }] resume];
 }
 
+static void fetchJSON(NSURL *url, void (^done)(NSDictionary *, NSError *)) {
+    fetchJSONAttempt(url, 0, done);
+}
+
 static void finish(NSString *trackID, SGDistroMetadata *metadata, NSError *error) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSArray *callbacks = [sg_waiting[trackID] copy];
@@ -238,7 +258,7 @@ static void finish(NSString *trackID, SGDistroMetadata *metadata, NSError *error
     });
 }
 
-static void parseAndFinish(NSString *trackID, NSDictionary *track) {
+static void parseAndFinish(NSString *trackID, NSDictionary *track, NSDictionary *prefetchedAlbum) {
     NSDictionary *album = dict(track[@"album"]);
     NSString *uuid = string(album[@"licensor"][@"uuid"]) ?: string(track[@"licensor"][@"uuid"]);
     NSMutableArray<NSString *> *labels = [NSMutableArray array];
@@ -271,11 +291,19 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
         meta.trackID = trackID;
         meta.title = string(track[@"name"]) ?: @"";
         NSMutableArray<NSString *> *names = [NSMutableArray array];
+        NSMutableArray<NSString *> *pairedNames = [NSMutableArray array], *pairedIDs = [NSMutableArray array];
         for (NSDictionary *artist in array(track[@"artist"])) {
             NSString *name = string(artist[@"name"]);
             if (name.length) [names addObject:name];
+            NSString *artistID = SGDistroSpotifyIDForGID(string(artist[@"gid"]));
+            if (name.length && artistID.length) {
+                [pairedNames addObject:name];
+                [pairedIDs addObject:artistID];
+            }
         }
         meta.artist = [names componentsJoinedByString:@", "];
+        meta.trackArtistNames = pairedNames;
+        meta.trackArtistIDs = pairedIDs;
         NSDictionary *albumInfo = fullAlbum.count ? fullAlbum : album;
         meta.albumName = string(albumInfo[@"name"]) ?: string(album[@"name"]) ?: @"";
         meta.label = fullLabel ?: label ?: @"";
@@ -306,6 +334,12 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
         finish(trackID, meta, nil);
     };
 
+    // The caller already read this release in full: nothing further to fetch.
+    if (prefetchedAlbum.count) {
+        build(prefetchedAlbum);
+        return;
+    }
+
     NSArray *rules = SGDistroLikelyRulesForUUID(uuid);
     BOOL needsCopyright = NO, needsUPC = NO, needsRename = NO;
     for (NSDictionary *candidate in rules) {
@@ -327,7 +361,7 @@ static void parseAndFinish(NSString *trackID, NSDictionary *track) {
     }
 }
 
-static void startLookup(NSString *trackID) {
+static void startLookup(NSString *trackID, NSDictionary *album) {
     NSString *gid = SGDistroGIDForSpotifyID(trackID);
     if (!gid) {
         finish(trackID, nil, [NSError errorWithDomain:@"spoti.pw.distrofind" code:3
@@ -336,11 +370,15 @@ static void startLookup(NSString *trackID) {
     }
     fetchJSON(metadataURL(@"track", gid), ^(NSDictionary *track, NSError *error) {
         if (error || !track) { finish(trackID, nil, error); return; }
-        parseAndFinish(trackID, track);
+        parseAndFinish(trackID, track, album);
     });
 }
 
 void SGDistroMetadataForTrack(NSString *trackID, SGDistroMetadataCompletion completion) {
+    SGDistroMetadataForTrackUsingAlbum(trackID, nil, completion);
+}
+
+void SGDistroMetadataForTrackUsingAlbum(NSString *trackID, NSDictionary *album, SGDistroMetadataCompletion completion) {
     if (!completion) return;
     if (trackID.length != 22) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -358,7 +396,7 @@ void SGDistroMetadataForTrack(NSString *trackID, SGDistroMetadataCompletion comp
         sg_waiting[trackID] = [NSMutableArray arrayWithObject:[completion copy]];
 
         void (^go)(void) = ^{
-            [sg_queue addOperationWithBlock:^{ startLookup(trackID); }];
+            [sg_queue addOperationWithBlock:^{ startLookup(trackID, album); }];
         };
         if (SGSpclientHeaders()[@"authorization"]) go();
         else SGSpclientWhenReady(go);

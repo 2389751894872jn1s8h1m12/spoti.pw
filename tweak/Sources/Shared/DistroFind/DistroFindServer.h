@@ -11,6 +11,8 @@
 typedef void (^SGDistroAvailabilityCompletion)(SGDistroAvailability *result, NSError *error);
 
 void SGDistroAvailabilityForTrack(NSString *trackID, SGDistroAvailabilityCompletion completion);
+// Every market Spotify sells in, as two-letter codes.
+NSArray<NSString *> *SGDistroSpotifyMarkets(void);
 void SGDistroPerformanceImageForTrack(NSString *trackID, void (^completion)(UIImage *image, NSString *message, NSError *error));
 void SGDistroOtherVersionsForTrack(NSString *trackID, void (^completion)(NSDictionary *result, NSError *error));
 void SGDistroVydiaSubDistributor(NSString *albumID, NSString *albumName, NSString *artistName,

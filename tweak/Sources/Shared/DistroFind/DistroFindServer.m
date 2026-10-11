@@ -26,6 +26,10 @@ static NSArray<NSString *> *spotifyMarkets(void) {
     return markets;
 }
 
+NSArray<NSString *> *SGDistroSpotifyMarkets(void) {
+    return spotifyMarkets();
+}
+
 static void onMain(void (^block)(void)) {
     dispatch_async(dispatch_get_main_queue(), block);
 }

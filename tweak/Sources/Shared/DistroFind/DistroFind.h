@@ -22,6 +22,9 @@
 @property (nonatomic, copy) NSString *pLine;
 @property (nonatomic, copy) NSString *cLine;
 @property (nonatomic, copy) NSArray<NSString *> *artistIDs;
+// The track's own credited artists, names and ids side by side (artistIDs adds the album's after them).
+@property (nonatomic, copy) NSArray<NSString *> *trackArtistNames;
+@property (nonatomic, copy) NSArray<NSString *> *trackArtistIDs;
 @property (nonatomic) NSInteger durationMs;
 @property (nonatomic) NSInteger trackNumber;
 @property (nonatomic) NSInteger discNumber;
@@ -34,6 +37,9 @@ typedef void (^SGDistroMetadataCompletion)(SGDistroMetadata *metadata, NSError *
 
 // Cached, asynchronous lookup. Completion is always delivered on the main queue.
 void SGDistroMetadataForTrack(NSString *trackID, SGDistroMetadataCompletion completion);
+// The same lookup when the caller already holds the track's full album metadata (an artist scan reads
+// every release anyway), so the album is not fetched a second time. Shares the cache with the above.
+void SGDistroMetadataForTrackUsingAlbum(NSString *trackID, NSDictionary *album, SGDistroMetadataCompletion completion);
 
 // A short label for badges: likely sub-distributor when known, otherwise parent distributor,
 // otherwise "Unknown". Nil only when no licensor UUID was returned at all.
