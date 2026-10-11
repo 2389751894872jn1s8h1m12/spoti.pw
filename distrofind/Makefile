@@ -12,6 +12,7 @@ DistroFind_FILES := \
     ../tweak/Sources/Shared/DistroFind/DistroFind.m \
     ../tweak/Sources/Shared/DistroFind/DistroFindServer.m \
     Sources/DistroFindCompanion.x \
+    Sources/DFChip.m \
     Sources/DFVisibleRowLookup.m \
     Sources/DFPerformanceGraph.m \
     Sources/DFPlayerArtistUI.x
